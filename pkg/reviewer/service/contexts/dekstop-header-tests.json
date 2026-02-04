@@ -1,0 +1,9 @@
+{
+    "name": "Example React Tests Context",
+    "description": "Example context for React component tests",
+    "repo": "https://github.com/your-org/your-repo",
+    "files": [
+        "frontend/src/components/header/Header.test.tsx",
+        "frontend/src/components/header/HeaderSearch.test.tsx"
+    ]
+}

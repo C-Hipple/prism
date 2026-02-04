@@ -1,0 +1,239 @@
+@use '../abstracts/variables' as *;
+@use '../abstracts/mixins' as *;
+
+.pr-table-container {
+  @include card;
+  padding: 0;
+  margin-bottom: $spacing-2xl;
+}
+
+.pr-table {
+  width: 100%;
+  border-collapse: collapse;
+  overflow: hidden;
+  font-size: $font-size-md;
+
+  th, td {
+    padding: $spacing-sm $spacing-md;
+    text-align: left;
+    border-bottom: 1px solid $color-bg-tertiary;
+  }
+
+  thead th {
+    background: $color-bg-tertiary;
+    color: $color-text-secondary;
+    font-weight: 600;
+    font-size: $font-size-sm;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  tbody tr {
+    @include hover-lift;
+
+    &:last-child td {
+      border-bottom: none;
+    }
+  }
+
+  &__title {
+    font-size: $font-size-md;
+    color: $color-text-secondary;
+    max-width: 600px;
+    word-wrap: break-word;
+    white-space: normal;
+    line-height: 1.4;
+    margin-top: 2px;
+  }
+
+  &__draft-indicator {
+    color: $color-text-secondary;
+    font-weight: 600;
+  }
+
+  &__approval-count {
+    text-align: center;
+    font-weight: 600;
+
+    &--positive {
+      color: $color-success;
+    }
+
+    &--zero {
+      color: $color-text-tertiary;
+    }
+  }
+
+  &__review-emoji {
+    text-align: center;
+    font-size: 18px;
+  }
+
+  &__reviewer-groups-cell {
+    font-size: $font-size-sm;
+    color: $color-text-secondary;
+    white-space: normal;
+    word-wrap: break-word;
+    width: 150px;
+  }
+
+  &__action-btn {
+    @include button-base;
+    color: $color-link;
+    border-color: $color-link;
+
+    &:hover:not(:disabled) {
+      background: $color-link;
+      color: white;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+
+  &__delete-btn {
+    @include button-base;
+    color: $color-error;
+    border-color: $color-error;
+
+    &:hover {
+      background: $color-error;
+      color: white;
+    }
+  }
+
+  &__notes {
+    width: 120px;
+    padding: 0 !important;
+  }
+
+  &__ci-status {
+    text-align: center;
+    width: 40px;
+  }
+}
+
+.ci-status {
+  font-size: 20px;
+  cursor: help;
+
+  &--success {
+    color: $color-success;
+  }
+
+  &--failure {
+    color: $color-error;
+  }
+
+  &--pending {
+    color: $color-warning;
+  }
+
+  &--unknown {
+    color: $color-text-tertiary;
+    opacity: 0.5;
+  }
+}
+
+.notes-cell {
+  padding: $spacing-sm $spacing-md;
+  cursor: pointer;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  font-size: $font-size-md;
+  font-family: $font-mono;
+  transition: background $transition-fast;
+
+  &--view {
+    &:hover {
+      background: rgba($color-link, 0.1);
+      border-radius: $radius-sm;
+    }
+  }
+
+  &--editing {
+    cursor: default;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  &__placeholder {
+    color: $color-text-tertiary;
+    font-style: italic;
+    opacity: 0.5;
+
+    .notes-cell--view:hover & {
+      opacity: 1;
+    }
+  }
+
+  &__input {
+    width: 100%;
+    background: $color-bg-tertiary;
+    border: 1px solid $color-link;
+    color: $color-text-primary;
+    padding: $spacing-xs $spacing-sm;
+    border-radius: $radius-sm;
+    font-size: $font-size-md;
+    font-family: $font-mono;
+    outline: none;
+
+    &:focus {
+      border-color: $color-link-hover;
+      box-shadow: 0 0 0 2px rgba($color-link, 0.2);
+    }
+
+    &--warning {
+      border-color: $color-warning;
+    }
+
+    &::placeholder {
+      color: $color-text-tertiary;
+      font-style: italic;
+    }
+  }
+
+  &__counter {
+    font-size: $font-size-xs;
+    color: $color-text-tertiary;
+
+    &--warning {
+      color: $color-warning-text;
+      font-weight: 600;
+    }
+  }
+
+  &__error {
+    font-size: $font-size-xs;
+    color: $color-error-text;
+    font-weight: 600;
+  }
+}
+
+.error-message {
+  background: $color-error;
+  color: white;
+  padding: $spacing-md $spacing-lg;
+  border-radius: $radius-md;
+  margin-bottom: $spacing-lg;
+  font-size: $font-size-md;
+}
+
+// Reviewer Groups Cell Styles
+.pr-table__reviewer-groups {
+  color: $color-text-secondary;
+}
+
+.pr-table__reviewer-groups--personal {
+  color: $color-link;
+  font-style: italic;
+}
+
+.pr-table__reviewer-groups--empty {
+  color: $color-text-tertiary;
+  opacity: 0.5;
+}

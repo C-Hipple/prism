@@ -1,0 +1,53 @@
+# Binaries
+pr-review-server
+bin/*
+!bin/.gitkeep
+!bin/*.sh
+
+# Database
+*.db
+*.db-journal
+
+# Reviews
+reviews/
+
+# Environment files (keep .env.example)
+.env
+.env.docker
+
+# Logs and debug files
+*.log
+*.log.*
+server.pid
+
+# Internal development docs (not for distribution)
+TODO.md
+TODO-*.md
+CLAUDE.md
+GEMINI.md
+
+# Go
+vendor/
+server/dist/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Docker volumes
+data/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+cloud-sql-proxy

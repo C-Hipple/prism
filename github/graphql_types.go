@@ -1,0 +1,119 @@
+package github
+
+// GraphQL response types for review data queries
+
+// ReviewAuthor represents the author of a review
+type ReviewAuthor struct {
+	Login string `json:"login"`
+}
+
+// ReviewNode represents a single review in the GraphQL response
+type ReviewNode struct {
+	Author *ReviewAuthor `json:"author"`
+	State  string        `json:"state"`
+}
+
+// ReviewsData holds the collection of review nodes
+type ReviewsData struct {
+	Nodes []ReviewNode `json:"nodes"`
+}
+
+// PRReviewGraphQL represents PR review data in GraphQL response
+type PRReviewGraphQL struct {
+	Reviews ReviewsData `json:"reviews"`
+}
+
+// RepoReviewData represents repository data containing PR review info
+type RepoReviewData struct {
+	PullRequest PRReviewGraphQL `json:"pullRequest"`
+}
+
+// GraphQLReviewResponse represents the full GraphQL response for review data queries
+type GraphQLReviewResponse struct {
+	Data map[string]RepoReviewData `json:"data"`
+}
+
+// GraphQL response types for reviewer groups queries
+
+// ReviewRequester represents a requested reviewer (User or Team)
+type ReviewRequester struct {
+	RequestedReviewer struct {
+		TypeName string `json:"__typename"` // "User" or "Team"
+		Login    string `json:"login"`      // User only
+		Name     string `json:"name"`       // Team only
+	} `json:"requestedReviewer"`
+}
+
+// ReviewRequestsData holds the collection of review requesters
+type ReviewRequestsData struct {
+	Nodes []ReviewRequester `json:"nodes"`
+}
+
+// PRReviewerGroupsGraphQL represents PR reviewer groups data in GraphQL response
+type PRReviewerGroupsGraphQL struct {
+	Number         int                `json:"number"`
+	ReviewRequests ReviewRequestsData `json:"reviewRequests"`
+}
+
+// RepoReviewerGroupsData represents repository data containing PR reviewer groups info
+type RepoReviewerGroupsData struct {
+	PullRequest PRReviewerGroupsGraphQL `json:"pullRequest"`
+}
+
+// GraphQLReviewerGroupsResponse represents the full GraphQL response for reviewer groups queries
+type GraphQLReviewerGroupsResponse struct {
+	Data map[string]RepoReviewerGroupsData `json:"data"`
+}
+
+// GraphQL response types for CI status queries
+
+// CheckNode represents a single CI check in the GraphQL response
+type CheckNode struct {
+	TypeName   string `json:"__typename"`
+	Name       string `json:"name"`
+	Conclusion string `json:"conclusion"`
+	Status     string `json:"status"`
+	Context    string `json:"context"`
+	State      string `json:"state"`
+}
+
+// ContextsData holds the collection of check nodes
+type ContextsData struct {
+	Nodes []CheckNode `json:"nodes"`
+}
+
+// StatusCheckRollup represents the overall CI status rollup
+type StatusCheckRollup struct {
+	State    string       `json:"state"`
+	Contexts ContextsData `json:"contexts"`
+}
+
+// CommitObject represents a commit object with status check rollup
+type CommitObject struct {
+	StatusCheckRollup *StatusCheckRollup `json:"statusCheckRollup"`
+}
+
+// RepoCIStatusData represents repository data containing CI status info
+type RepoCIStatusData struct {
+	Object *CommitObject `json:"object"`
+}
+
+// GraphQLCIStatusResponse represents the full GraphQL response for CI status queries
+type GraphQLCIStatusResponse struct {
+	Data map[string]RepoCIStatusData `json:"data"`
+}
+
+// PRInfo holds basic PR identification info for batch operations
+type PRInfo struct {
+	Owner  string
+	Repo   string
+	Number int
+}
+
+// PRInfoWithCommit holds PR identification info including commit SHA
+type PRInfoWithCommit struct {
+	Owner     string
+	Repo      string
+	Number    int
+	CommitSHA string
+}

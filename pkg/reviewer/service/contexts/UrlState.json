@@ -1,0 +1,9 @@
+{
+    "name": "UrlState",
+    "description": "Example context for URL state management files",
+    "repo": "https://github.com/your-org/your-repo",
+    "files": [
+        "frontend/src/state/urlStateBase.ts",
+        "frontend/src/state/urlState.ts"
+    ]
+}

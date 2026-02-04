@@ -1,0 +1,82 @@
+package poller
+
+import (
+	"context"
+
+	gh "github.com/google/go-github/v57/github"
+
+	"pr-review-server/github"
+)
+
+// GitHubClient defines the interface for GitHub API operations used by the poller.
+// This interface enables mocking GitHub calls in tests.
+type GitHubClient interface {
+	// GetPRsRequestingReview returns PRs where the user is a requested reviewer
+	GetPRsRequestingReview(ctx context.Context) ([]github.PullRequest, error)
+
+	// GetMyOpenPRs returns the user's own open PRs
+	GetMyOpenPRs(ctx context.Context) ([]github.PullRequest, error)
+
+	// IsPROpen checks if a PR is currently open (not closed or merged)
+	IsPROpen(ctx context.Context, owner, repo string, prNumber int) (bool, error)
+
+	// GetPRDetails fetches title and author for a specific PR
+	GetPRDetails(ctx context.Context, owner, repo string, prNumber int) (title, author string, err error)
+
+	// GetPRHeadSHA fetches the current HEAD commit SHA for a PR
+	GetPRHeadSHA(ctx context.Context, owner, repo string, prNumber int) (string, error)
+
+	// GetPR fetches a full PR object from GitHub
+	GetPR(ctx context.Context, owner, repo string, prNumber int) (*gh.PullRequest, *gh.Response, error)
+
+	// BatchGetPRReviewData fetches review data for multiple PRs efficiently using GraphQL
+	BatchGetPRReviewData(ctx context.Context, prs []github.PullRequest) (map[string]*github.PRReviewData, error)
+
+	// BatchGetCIStatus fetches CI check status for multiple PRs using GraphQL
+	BatchGetCIStatus(ctx context.Context, prs []struct {
+		Owner, Repo string
+		Number      int
+		CommitSHA   string
+	}) (map[string]*github.CIStatus, error)
+}
+
+// Verify that github.Client implements GitHubClient interface at compile time
+var _ GitHubClient = (*github.Client)(nil)
+
+// ReviewStorage defines the interface for storing and checking reviews.
+// This interface enables mocking storage operations in tests.
+type ReviewStorage interface {
+	// ReviewExists checks if a review already exists for the given PR+commit
+	ReviewExists(ctx context.Context, owner, repo string, prNumber int, commitSHA string) (bool, error)
+
+	// SaveReview saves the review HTML content and returns the filename/path
+	SaveReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, htmlContent []byte) (string, error)
+}
+
+// ReviewResult contains the output from generating a review
+type ReviewResult struct {
+	HTMLContent   []byte
+	CriticalCount int
+	MediumCount   int
+	LowCount      int
+}
+
+// ReviewGeneratorConfig contains configuration for generating a review
+type ReviewGeneratorConfig struct {
+	Token        string
+	Owner        string
+	RepoName     string
+	PRNumber     int
+	CommitSHA    string
+	WithComments bool
+	Verbose      bool
+	Fast         bool
+	NRequests    int
+}
+
+// ReviewGenerator defines the interface for generating AI reviews.
+// This interface enables mocking the review generation in tests.
+type ReviewGenerator interface {
+	// GenerateReview generates an AI review for the given PR
+	GenerateReview(ctx context.Context, cfg ReviewGeneratorConfig) (*ReviewResult, error)
+}

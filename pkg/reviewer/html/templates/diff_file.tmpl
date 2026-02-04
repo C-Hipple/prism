@@ -1,0 +1,31 @@
+{{define "diff-file"}}
+{{$filePath := .File.Path}}
+<div class="diff-file">
+    <div class="file-header">{{$filePath}}</div>
+    <div class="diff-table">
+        {{range .File.Lines}}
+        <div class="line {{.Type}}">
+            <div class="line-num">{{if eq .OldLineNumber 0}}-{{else}}{{.OldLineNumber}}{{end}}</div>
+            <div class="line-num">{{if eq .NewLineNumber 0}}-{{else}}{{.NewLineNumber}}{{end}}</div>
+            <div class="line-content">{{.Content}}</div>
+        </div>
+        {{$comments := index (index $.Root.Comments $filePath) .NewLineNumber}}
+        {{if $comments}}
+        <div class="comment-row">
+            <div class="line-num"></div><div class="line-num"></div>
+            <div class="comment-cell">
+                {{range $comments}}
+                <div class="comment-body">
+                    <div class="comment-counter">
+                        Comment {{.Counter}} of {{.Total}}
+                    </div>
+                    {{.CommentBody | markdownify}}
+                </div>
+                {{end}}
+            </div>
+        </div>
+        {{end}}
+        {{end}}
+    </div>
+  </div>
+{{end}}

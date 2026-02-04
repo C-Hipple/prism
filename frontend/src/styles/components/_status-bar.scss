@@ -1,0 +1,80 @@
+@use '../abstracts/variables' as *;
+@use '../abstracts/mixins' as *;
+
+.status-bar {
+  @include card;
+  display: flex;
+  gap: $spacing-2xl;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: $spacing-xl;
+
+  &__item {
+    display: flex;
+    align-items: center;
+    gap: $spacing-sm;
+  }
+
+  &__label {
+    color: $color-text-tertiary;
+    font-size: $font-size-sm;
+  }
+
+  &__value {
+    font-weight: 600;
+    color: $color-link;
+    display: flex;
+    align-items: center;
+    gap: $spacing-xs;
+
+    &--running {
+      color: $color-success;
+    }
+  }
+
+  &__error {
+    color: $color-error;
+  }
+
+  &__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: $color-success;
+    @include pulse-animation;
+  }
+
+  &__badge {
+    padding: 2px 6px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    
+    &--connected {
+      background-color: rgba($color-success, 0.2);
+      color: $color-success;
+      border: 1px solid rgba($color-success, 0.3);
+    }
+
+    &--disconnected {
+      background-color: rgba($color-error, 0.2);
+      color: $color-error;
+      border: 1px solid rgba($color-error, 0.3);
+    }
+
+    &--connecting {
+      background-color: rgba($color-warning, 0.2);
+      color: $color-warning;
+      border: 1px solid rgba($color-warning, 0.3);
+    }
+  }
+
+  &--error {
+    border-left: 4px solid $color-error;
+  }
+
+  &--running {
+    border-left: 4px solid $color-success;
+  }
+}

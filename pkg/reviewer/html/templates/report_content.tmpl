@@ -1,0 +1,77 @@
+{{define "report-content"}}
+    <div class="pr-description">
+        <h2>PR Description</h2>
+        {{.PRBody}}
+    </div>
+
+    {{if .SummaryComments}}
+    <div class="summary-section">
+        <h2>Review Summary</h2>
+        {{range .SummaryComments}}
+        <div class="summary-comment">
+            <div class="comment-counter">
+                Comment {{.Counter}} of {{.Total}}
+            </div>
+            <div class="summary-body">
+                {{.CommentBody | markdownify}}
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+
+    {{if .GeneralComments}}
+    <div class="general-section">
+        <h2>General Comments</h2>
+        {{range .GeneralComments}}
+        <div class="general-comment">
+            <div class="comment-counter">
+                Comment {{.Counter}} of {{.Total}}
+            </div>
+            <div class="general-body">
+                {{.CommentBody | markdownify}}
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+
+    {{$root := .}}
+    {{range .Files}}
+        {{template "diff-file" (dict "File" . "Root" $root)}}
+    {{end}}
+
+    {{if .AdjacentComments}}
+    <div class="adjacent-section">
+        <h2>Adjacent File-Specific Comments</h2>
+        <p class="adjacent-explanation">These comments reference specific files and lines adjacent to but not explicitly in the original diff.</p>
+        {{range .AdjacentComments}}
+        <div class="diff-file">
+            <div class="file-header">{{.FilePath}}:{{.LineNumber}}</div>
+            <div class="diff-table">
+                {{if .ContextLines}}
+                {{range .ContextLines}}
+                <div class="line context{{if .IsTarget}} target-line{{end}}">
+                    <div class="line-num">-</div>
+                    <div class="line-num">{{.LineNumber}}</div>
+                    <div class="line-content">{{.Content}}</div>
+                </div>
+                {{end}}
+                {{end}}
+                <div class="comment-row">
+                    <div class="line-num"></div><div class="line-num"></div>
+                    <div class="comment-cell">
+                        <div class="comment-body">
+                            <div class="comment-counter">
+                                Comment {{.Counter}} of {{.Total}}
+                            </div>
+                            {{.CommentBody | markdownify}}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+{{end}}

@@ -1,0 +1,539 @@
+{{define "layout"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>#{{.PRNumber}} - AI Code Review</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; line-height: 1.5; background-color: #0d1117; color: #c9d1d9; margin: 0; }
+        .container { max-width: 1200px; margin: 20px auto; }
+        h1 { text-align: center; color: #58a6ff; }
+        h1 a { color: #58a6ff; text-decoration: none; }
+        h1 a:hover { color: #80bfff; text-decoration: underline; }
+        .diff-file { border: 1px solid #30363d; border-radius: 6px; margin-bottom: 20px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 12px; }
+        .file-header { background-color: #161b22; padding: 10px; border-bottom: 1px solid #30363d; font-weight: 600; }
+        .diff-table { width: 100%; border-collapse: collapse; }
+        .line { display: table-row; }
+        .line-num { display: table-cell; padding: 2px 10px; text-align: right; color: #8b949e; width: 40px; background-color: #161b22; border-right: 1px solid #30363d; }
+        .line-content { display: table-cell; padding: 2px 10px; white-space: pre-wrap; }
+        .added .line-content { background-color: rgba(46, 160, 67, 0.15); }
+        .added .line-content::before { content: "+"; padding-right: 10px; color: #2ea043; }
+        .deleted .line-content { background-color: rgba(248, 81, 73, 0.15); }
+        .deleted .line-content::before { content: "-"; padding-right: 10px; color: #f85149; }
+        .comment-row { display: table-row; }
+        .comment-cell { display: table-cell; background-color: #161b22; padding: 10px; border-top: 1px solid #30363d; }
+        .comment-body { background-color: #1f2a50; border: 1px solid #2a3b4d; border-radius: 6px; padding: 15px; margin: 5px 0; }
+        .comment-body pre { background-color: #161b22; padding: 10px; border-radius: 3px; }
+        .comment-body code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; }
+        .comment-counter { font-size: 12px; font-weight: bold; color: #a3a3a3; margin-bottom: 10px; text-align: right; }
+        .summary-section { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 20px; margin: 20px 0; }
+        .summary-section h2 { color: #c9d1d9; margin-top: 0; }
+        .summary-comment { background-color: #1f2a50; border: 1px solid #2a3b4d; border-radius: 6px; padding: 15px; margin: 10px 0; }
+        .summary-body { color: #c9d1d9; line-height: 1.5; }
+        .summary-body h3, .summary-body h4 { color: #f0f6fc; }
+        .summary-body strong { color: #f0f6fc; }
+        .pr-description {
+            background-color: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 10px 20px;
+            margin-bottom: 20px;
+        }
+        .header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            margin-bottom: 10px;
+        }
+        .token-use-summary {
+            background-color: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 10px 14px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            color: #c9d1d9;
+            min-width: 220px;
+        }
+        .token-use-summary h2 {
+            margin: 0 0 6px 0;
+            font-size: 14px;
+            color: #58a6ff;
+        }
+        .token-use-summary p {
+            margin: 2px 0;
+            font-size: 12px;
+            color: #a3a3a3;
+        }
+        .help-tooltip {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #4a2d73;
+            color: #e6e6e6;
+            padding: 12px 18px;
+            border-radius: 8px;
+            font-size: 16px;
+            z-index: 1000;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        
+        /* Context lines for adjacent comments */
+        .context-code { 
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; 
+            font-size: 12px; 
+            background-color: #161b22; 
+            border: 1px solid #30363d; 
+            border-radius: 6px; 
+            margin: 10px 0; 
+            overflow-x: auto; 
+        }
+        .context-line { 
+            display: flex; 
+            border-bottom: 1px solid #21262d; 
+        }
+        .context-line:last-child { 
+            border-bottom: none; 
+        }
+        .context-line-num { 
+            padding: 2px 10px; 
+            text-align: right; 
+            color: #8b949e; 
+            width: 50px; 
+            background-color: #0d1117; 
+            border-right: 1px solid #30363d; 
+            flex-shrink: 0; 
+        }
+        .context-line-content { 
+            padding: 2px 10px; 
+            white-space: pre; 
+            flex-grow: 1; 
+        }
+        .target-line { 
+            background-color: rgba(255, 212, 59, 0.15); /* Highlight the commented line in amber */
+        }
+        .target-line .context-line-content { 
+            background-color: rgba(255, 212, 59, 0.15); 
+        }
+        .target-line .context-line-num { 
+            background-color: rgba(255, 212, 59, 0.25); 
+            color: #f0c674; 
+            font-weight: bold; 
+        }
+
+        .chat-sidebar {
+            position: fixed;
+            right: -350px;
+            top: 0;
+            width: 350px;
+            height: 100%;
+            background-color: #161b22;
+            border-left: 1px solid #30363d;
+            box-shadow: -2px 0 5px rgba(0,0,0,0.1);
+            transition: right 0.3s ease-in-out;
+            display: flex;
+            flex-direction: column;
+            z-index: 1001;
+            color: #c9d1d9;
+        }
+
+        .chat-sidebar.open {
+            right: 0;
+        }
+
+        .chat-handle {
+            position: absolute;
+            left: -79px;
+            top: 20px;
+            width: 70px;
+            height: 50px;
+            background-color:rgb(114, 74, 223);
+            color: #0d1117;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            border-radius: 8px 0 0 8px;
+            font-size: 14px;
+            font-weight: bold;
+            flex-direction: column;
+            padding: 4px;
+            gap: 2px;
+        }
+
+        .prompt-handle {
+            top: 80px;
+        }
+
+        .chat-content {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            padding: 15px;
+        }
+
+        .chat-content h3, .prompt-content h3 {
+            margin-top: 0;
+            text-align: center;
+            border-bottom: 1px solid #30363d;
+            padding-bottom: 10px;
+        }
+
+        .chat-messages {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 10px;
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 8px;
+            max-width: 90%;
+            word-wrap: break-word;
+        }
+
+        .message.user {
+            background-color: #1f2a50;
+            align-self: flex-end;
+        }
+
+        .message.assistant {
+            background-color: #22272e;
+            align-self: flex-start;
+        }
+
+        .message p {
+            margin: 0;
+        }
+
+        .chat-input {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chat-input textarea {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            flex-grow: 1;
+            padding: 10px;
+            border-radius: 4px;
+            resize: vertical;
+            margin-bottom: 5px;
+        }
+
+        .chat-input button {
+            padding: 10px 15px;
+            border: none;
+            background-color: #58a6ff;
+            color: #0d1117;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .chat-input button:hover {
+            background-color: #80bfff;
+        }
+
+        .prompt-content {
+            display: none;
+            flex-direction: column;
+            height: 100%;
+            padding: 15px;
+        }
+
+        .prompt-body {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 10px;
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+        }
+
+        .hidden { display: none; }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+<div class="container" id="report-container">
+    <div class="header-row">
+        <div>
+            <h1><a href="{{.PRURL}}" target="_blank">#{{.PRNumber}}</a> - AI Code Review</h1>
+            <p style="text-align: center; color: #8b949e; font-size: 14px; margin-top: -10px;">Generated on {{.GeneratedAt}} · Commit <a href="{{.PRURL}}/commits/{{.CommitSHA}}" target="_blank" style="color: #58a6ff; font-family: monospace;">{{.ShortCommitSHA}}</a></p>
+        </div>
+        <div class="token-use-summary">
+            <h2>Token Usage Summary</h2>
+            <p>Prompt Tokens: {{.PromptTokenCount}}</p>
+            <p>Candidates Tokens: {{.CandidatesTokenCount}}</p>
+            <p>Total Tokens (including all requests): {{.TotalTokenCount}}</p>
+        </div>
+    </div>
+
+    {{template "report-content" .}}
+</div>
+
+    <div class="help-tooltip">
+      Press J to scroll to next review comment<br>
+      Press K to scroll to previous review comment
+    </div>
+
+    {{template "sidebar" .}}
+
+    <script>
+    const GEMINI_API_KEY = "{{.APIKey}}";
+    const RAW_DIFF = `{{ .RawDiff }}`;
+    const PR_BODY = `{{ .PRBody }}`;
+
+    document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('.comment-body pre code').forEach((block) => {
+            hljs.highlightElement(block);
+        });
+
+        const comments = document.querySelectorAll('.comment-body, .summary-comment, .general-comment');
+        const totalComments = comments.length;
+
+        comments.forEach((comment, index) => {
+            const counterDiv = comment.querySelector('.comment-counter');
+            if (counterDiv) {
+                counterDiv.textContent = `Comment ${index + 1} of ${totalComments}`;
+            }
+        });
+
+        let currentCommentIndex = -1;
+
+        document.addEventListener('keydown', (e) => {
+            const key = (e.key || '').toLowerCase();
+            if (key === 'j' || key === 'k') {
+                const activeElement = document.activeElement;
+                const chatSidebar = document.getElementById('chat-sidebar');
+                const isTypingInChat = activeElement && (
+                    activeElement.id === 'chat-textarea' ||
+                    (chatSidebar && chatSidebar.contains(activeElement))
+                );
+
+                if (!isTypingInChat) {
+                    e.preventDefault();
+                    if (comments.length > 0) {
+                        if (key === 'j') {
+                            currentCommentIndex = (currentCommentIndex + 1) % comments.length;
+                        } else {
+                            currentCommentIndex = (currentCommentIndex === -1)
+                                ? comments.length - 1
+                                : (currentCommentIndex - 1 + comments.length) % comments.length;
+                        }
+                        comments[currentCommentIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                }
+            }
+        });
+
+        const handle = document.getElementById('chat-handle');
+        const promptHandle = document.getElementById('prompt-handle');
+        const sidebar = document.getElementById('chat-sidebar');
+        const sendBtn = document.getElementById('chat-send-btn');
+        const textarea = document.getElementById('chat-textarea');
+        const messagesContainer = document.getElementById('chat-messages');
+        const chatContent = document.querySelector('.chat-content');
+        const promptContent = document.getElementById('prompt-content');
+
+        let currentSidebarView = 'chat';
+
+        function showView(view) {
+            if (view === 'chat') {
+                chatContent.style.display = 'flex';
+                promptContent.style.display = 'none';
+            } else {
+                chatContent.style.display = 'none';
+                promptContent.style.display = 'flex';
+            }
+            currentSidebarView = view;
+        }
+
+        function toggleSidebarTo(view) {
+            const isOpen = sidebar.classList.contains('open');
+            if (isOpen && currentSidebarView === view) {
+                sidebar.classList.remove('open');
+                return;
+            }
+            if (!isOpen) {
+                sidebar.classList.add('open');
+            }
+            showView(view);
+        }
+
+        handle.addEventListener('click', () => toggleSidebarTo('chat'));
+        promptHandle.addEventListener('click', () => toggleSidebarTo('prompt'));
+
+        sendBtn.addEventListener('click', sendMessage);
+        textarea.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        let conversationHistory = [];
+
+        async function sendMessage() {
+            const userInput = textarea.value.trim();
+            if (userInput === '') return;
+
+            appendMessage('user', userInput);
+            textarea.value = '';
+
+            const thinkingMessage = appendMessage('assistant', 'Thinking...');
+
+            try {
+                const fullContext = `
+                    You are a helpful AI assistant integrated into a code review report.
+                    The user is asking for more information about the review, the code, or the PR.
+
+                    Here is the original PR Body:
+                    ---
+                    ${PR_BODY}
+                    ---
+
+                    Here is the full diff of the changes:
+                    ---
+                    ${RAW_DIFF}
+                    ---
+
+                    Here are the initial review comments you provided:
+                    ---
+                    {{ range .Comments }}{{ . }}{{ end }}
+                    ---
+
+                    Here is the conversation history:
+                    ---
+                    ${conversationHistory.map(m => `${m.role}: ${m.parts[0].text}`).join('\n')}
+                    ---
+
+                    Now, please answer the following question from the user.
+                `;
+
+                const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/{{.ModelName}}:streamGenerateContent?key=${GEMINI_API_KEY}`;
+
+                conversationHistory.push({ role: 'user', parts: [{ text: userInput }] });
+
+                const requestBody = {
+                    contents: [
+                        ...conversationHistory,
+                         { role: 'model', parts: [{ text: fullContext }] }
+                    ],
+                };
+
+                const response = await fetch(GEMINI_API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API request failed: ${response.statusText}`);
+                }
+
+                thinkingMessage.remove();
+                const assistantMessage = appendMessage('assistant', '');
+                const assistantTextElement = assistantMessage.querySelector('p');
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let assistantResponse = '';
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        break;
+                    }
+
+                    const chunk = decoder.decode(value, { stream: true });
+                    buffer += chunk;
+
+                    let startIndex = 0;
+                    while (startIndex < buffer.length) {
+                        let objectStart = buffer.indexOf('{', startIndex);
+                        if (objectStart === -1) break;
+
+                        let braceCount = 0;
+                        let objectEnd = -1;
+
+                        for (let i = objectStart; i < buffer.length; i++) {
+                            if (buffer[i] === '{') {
+                                braceCount++;
+                            } else if (buffer[i] === '}') {
+                                braceCount--;
+                                if (braceCount === 0) {
+                                    objectEnd = i;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (objectEnd === -1) {
+                            break;
+                        }
+
+                        const jsonStr = buffer.substring(objectStart, objectEnd + 1);
+
+                        try {
+                            const chunk = JSON.parse(jsonStr);
+
+                            if (chunk.candidates && chunk.candidates[0] && chunk.candidates[0].content && chunk.candidates[0].content.parts) {
+                                const text = chunk.candidates[0].content.parts[0].text;
+                                if (text) {
+                                    assistantResponse += text;
+                                    assistantTextElement.textContent = assistantResponse;
+                                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                                }
+                            }
+                        } catch (e) {
+                        }
+
+                        startIndex = objectEnd + 1;
+                    }
+
+                    if (startIndex > 0) {
+                        buffer = buffer.substring(startIndex);
+                    }
+                }
+
+                conversationHistory.push({ role: 'model', parts: [{ text: assistantResponse }] });
+
+            } catch (error) {
+                thinkingMessage.remove();
+                appendMessage('assistant', 'Sorry, I encountered an error. Please check the console for details.');
+            }
+        }
+
+        function appendMessage(role, text) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message', role);
+
+            const p = document.createElement('p');
+            p.textContent = text;
+            messageDiv.appendChild(p);
+
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            return messageDiv;
+        }
+    });
+    </script>
+  </body>
+</html>
+{{end}}

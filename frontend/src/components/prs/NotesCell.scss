@@ -1,0 +1,49 @@
+.notes-cell {
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  min-width: 60px;
+  max-width: 120px;
+  font-size: 12px;
+  transition: background-color 0.15s ease;
+
+  &:hover {
+    background-color: rgba(88, 166, 255, 0.1);
+  }
+
+  &--has-content {
+    color: #58a6ff;
+    font-weight: 500;
+  }
+
+  &--empty {
+    color: #8b949e;
+  }
+
+  &__placeholder {
+    opacity: 0.5;
+  }
+
+  &--editing {
+    padding: 0;
+  }
+
+  &__input {
+    width: 100%;
+    padding: 4px 8px;
+    font-size: 12px;
+    border: 1px solid #58a6ff;
+    border-radius: 4px;
+    background-color: #0d1117;
+    color: #c9d1d9;
+    outline: none;
+
+    &:focus {
+      box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.3);
+    }
+
+    &::placeholder {
+      color: #8b949e;
+    }
+  }
+}
