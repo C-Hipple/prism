@@ -870,13 +870,20 @@ func (p *Poller) poll(ctx context.Context) {
 						continue
 					}
 
-					// Check if anything actually changed
+					// Always sync user_pr_views with latest review status from GitHub
+					if p.devUser != nil {
+						if err := p.db.UpdateUserReviewStatus(p.devUser.ID, existingPR.ID, reviewData.MyReviewStatus); err != nil {
+							log.Printf("[POLL] Warning: Failed to update user review status for PR %d: %v", existingPR.ID, err)
+						}
+					}
+
+					// Check if anything actually changed in prs table
 					approvalChanged := existingPR.ApprovalCount != reviewData.ApprovalCount
 					reviewStatusChanged := existingPR.MyReviewStatus != reviewData.MyReviewStatus
 					draftChanged := existingPR.Draft != pr.Draft
 
 					if !approvalChanged && !reviewStatusChanged && !draftChanged {
-						continue // Nothing changed, skip update
+						continue // Nothing changed in prs table, skip update
 					}
 
 					// Update approval count, my review status, and draft status (always use fresh values from GitHub)
@@ -892,12 +899,6 @@ func (p *Poller) poll(ctx context.Context) {
 					if err != nil {
 						log.Printf("[POLL] ERROR: Failed to update review data for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 					} else {
-						// Also update user_pr_views for dev user if review status changed
-						if reviewStatusChanged && p.devUser != nil {
-							if err := p.db.UpdateUserReviewStatus(p.devUser.ID, existingPR.ID, reviewData.MyReviewStatus); err != nil {
-								log.Printf("[POLL] Warning: Failed to update user review status for PR %d: %v", existingPR.ID, err)
-							}
-						}
 						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 						updateCount++
 					}
