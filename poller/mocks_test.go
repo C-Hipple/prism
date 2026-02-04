@@ -450,6 +450,10 @@ func (m *MockDatabase) UpdateUserPRNotes(userID, prID int, notes string) error {
 	return nil
 }
 
+func (m *MockDatabase) UpdateUserReviewStatus(userID, prID int, status string) error {
+	return nil
+}
+
 func (m *MockDatabase) HidePRForUser(userID, prID int) error {
 	return nil
 }

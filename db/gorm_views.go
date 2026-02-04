@@ -131,6 +131,13 @@ func (g *GormDB) UpdateUserPRNotes(userID, prID int, notes string) error {
 		Update("notes", notes).Error
 }
 
+// UpdateUserReviewStatus updates the review_status field for a user's PR view
+func (g *GormDB) UpdateUserReviewStatus(userID, prID int, reviewStatus string) error {
+	return g.db.Model(&UserPRViewModel{}).
+		Where("user_id = ? AND pr_id = ?", userID, prID).
+		Update("review_status", reviewStatus).Error
+}
+
 // HidePRForUser hides a PR from a user's view (soft delete)
 func (g *GormDB) HidePRForUser(userID, prID int) error {
 	return g.db.Model(&UserPRViewModel{}).

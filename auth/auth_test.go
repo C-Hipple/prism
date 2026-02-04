@@ -146,8 +146,9 @@ func (m *MockDatabase) GetPRsForUser(userID int) ([]db.PR, error)               
 func (m *MockDatabase) GetPRsForUserWithNotes(userID int) ([]db.PRWithUserView, error) {
 	return nil, nil
 }
-func (m *MockDatabase) UpdateUserPRNotes(userID, prID int, notes string) error { return nil }
-func (m *MockDatabase) HidePRForUser(userID, prID int) error                   { return nil }
+func (m *MockDatabase) UpdateUserPRNotes(userID, prID int, notes string) error       { return nil }
+func (m *MockDatabase) UpdateUserReviewStatus(userID, prID int, status string) error { return nil }
+func (m *MockDatabase) HidePRForUser(userID, prID int) error                         { return nil }
 func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error { return nil }
 func (m *MockDatabase) MigrateLegacyNotes(userID int) (int, error)             { return 0, nil }
 func (m *MockDatabase) Close() error                                           { return nil }

@@ -892,6 +892,12 @@ func (p *Poller) poll(ctx context.Context) {
 					if err != nil {
 						log.Printf("[POLL] ERROR: Failed to update review data for %s/%s#%d: %v", pr.Owner, pr.Repo, pr.Number, err)
 					} else {
+						// Also update user_pr_views for dev user if review status changed
+						if reviewStatusChanged && p.devUser != nil {
+							if err := p.db.UpdateUserReviewStatus(p.devUser.ID, existingPR.ID, reviewData.MyReviewStatus); err != nil {
+								log.Printf("[POLL] Warning: Failed to update user review status for PR %d: %v", existingPR.ID, err)
+							}
+						}
 						p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
 						updateCount++
 					}

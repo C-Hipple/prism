@@ -131,6 +131,7 @@ type Database interface {
 	GetPRsForUser(userID int) ([]PR, error)
 	GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error)
 	UpdateUserPRNotes(userID, prID int, notes string) error
+	UpdateUserReviewStatus(userID, prID int, reviewStatus string) error
 	HidePRForUser(userID, prID int) error
 	EnsureUserPRView(userID, prID int, isAuthor bool) error
 	MigrateLegacyNotes(userID int) (int, error)
