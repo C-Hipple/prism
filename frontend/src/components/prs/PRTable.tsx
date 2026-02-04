@@ -23,6 +23,7 @@ export function PRTable({ prs, showReviewColumns = true }: PRTableProps) {
             <th>CI</th>
             <th>Approvals</th>
             <th>My Review</th>
+            <th>Via Teams</th>
             <th>Notes</th>
             {showReviewColumns && <th>Review</th>}
             <th>Actions</th>

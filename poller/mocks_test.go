@@ -146,6 +146,10 @@ func (m *MockGitHubClient) BatchGetCIStatus(ctx context.Context, prs []struct {
 	return m.BatchGetCIStatusResults, nil
 }
 
+func (m *MockGitHubClient) BatchGetReviewerGroups(ctx context.Context, prs []github.PullRequest) (map[string]*github.ReviewerGroupData, error) {
+	return nil, nil
+}
+
 // MockDatabase implements db.Database for testing
 type MockDatabase struct {
 	mu sync.RWMutex
@@ -451,6 +455,10 @@ func (m *MockDatabase) UpdateUserPRNotes(userID, prID int, notes string) error {
 }
 
 func (m *MockDatabase) UpdateUserReviewStatus(userID, prID int, status string) error {
+	return nil
+}
+
+func (m *MockDatabase) UpdateUserViaTeams(userID, prID int, viaTeams []string) error {
 	return nil
 }
 

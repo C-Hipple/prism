@@ -98,6 +98,7 @@ type PRResponse struct {
 	CIFailedChecks  []string `json:"ci_failed_checks"` // Names of failed checks
 	CreatedAt       *string  `json:"created_at"`       // PR creation timestamp from GitHub
 	IsMine          bool     `json:"is_mine"`          // true if current user is the PR author
+	ViaTeams        []string `json:"via_teams"`        // Team names that caused this review request
 	// Review importance counts
 	CriticalCount int `json:"critical_count"` // Number of CRITICAL importance comments
 	MediumCount   int `json:"medium_count"`   // Number of MEDIUM importance comments
@@ -313,6 +314,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			CIFailedChecks:  ciFailedChecks,
 			CreatedAt:       createdAt,
 			IsMine:          prView.IsAuthor, // Use IsAuthor from user_pr_views
+			ViaTeams:        prView.ViaTeams, // Team names from user_pr_views
 			CriticalCount:   dbPR.CriticalCount,
 			MediumCount:     dbPR.MediumCount,
 			LowCount:        dbPR.LowCount,

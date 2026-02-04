@@ -38,6 +38,9 @@ type GitHubClient interface {
 		Number      int
 		CommitSHA   string
 	}) (map[string]*github.CIStatus, error)
+
+	// BatchGetReviewerGroups fetches reviewer group info for multiple PRs using GraphQL
+	BatchGetReviewerGroups(ctx context.Context, prs []github.PullRequest) (map[string]*github.ReviewerGroupData, error)
 }
 
 // Verify that github.Client implements GitHubClient interface at compile time

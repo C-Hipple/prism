@@ -907,7 +907,28 @@ func (p *Poller) poll(ctx context.Context) {
 			log.Printf("[POLL] Updated review data for %d PRs (only those with changes)", updateCount)
 		}
 
-		// Note: Reviewer groups are now stored per-user in UserPRView, not on PR
+		// Batch fetch reviewer groups and sync to user_pr_views
+		if p.devUser != nil {
+			log.Printf("[POLL] Batch fetching reviewer groups for %d PRs...", len(allPRs))
+			reviewerGroupsMap, err := p.ghClient.BatchGetReviewerGroups(ctx, allPRs)
+			if err != nil {
+				log.Printf("[POLL] WARNING: Failed to batch fetch reviewer groups: %v", err)
+			} else {
+				for _, pr := range allPRs {
+					key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
+					if groupData, exists := reviewerGroupsMap[key]; exists {
+						existingPR, existsInDB := existingPRsMap[key]
+						if !existsInDB {
+							continue
+						}
+						if err := p.db.UpdateUserViaTeams(p.devUser.ID, existingPR.ID, groupData.ReviewerGroups); err != nil {
+							log.Printf("[POLL] Warning: Failed to update via_teams for PR %d: %v", existingPR.ID, err)
+						}
+					}
+				}
+				log.Printf("[POLL] Updated reviewer groups for %d PRs", len(reviewerGroupsMap))
+			}
+		}
 	}
 
 	// Batch fetch CI status for all PRs using GraphQL

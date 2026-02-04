@@ -18,6 +18,8 @@ export interface PR {
   ci_failed_checks: string[];
   created_at: string | null;
   is_mine: boolean;
+  // Team names that caused this review request
+  via_teams: string[];
   // Review importance counts
   critical_count: number;
   medium_count: number;

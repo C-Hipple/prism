@@ -79,10 +79,11 @@ type UserPRView struct {
 // PRWithUserView combines PR data with user-specific view data
 type PRWithUserView struct {
 	PR
-	IsAuthor     bool   // From user_pr_views
-	IsReviewer   bool   // From user_pr_views
-	UserNotes    string // Notes from user_pr_views (overrides PR.Notes)
-	ReviewStatus string // User's review status from user_pr_views
+	IsAuthor     bool     // From user_pr_views
+	IsReviewer   bool     // From user_pr_views
+	UserNotes    string   // Notes from user_pr_views (overrides PR.Notes)
+	ReviewStatus string   // User's review status from user_pr_views
+	ViaTeams     []string // Team names from user_pr_views
 }
 
 // Database defines the interface that both SQLite and PostgreSQL implementations must satisfy
@@ -132,6 +133,7 @@ type Database interface {
 	GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error)
 	UpdateUserPRNotes(userID, prID int, notes string) error
 	UpdateUserReviewStatus(userID, prID int, reviewStatus string) error
+	UpdateUserViaTeams(userID, prID int, viaTeams []string) error
 	HidePRForUser(userID, prID int) error
 	EnsureUserPRView(userID, prID int, isAuthor bool) error
 	MigrateLegacyNotes(userID int) (int, error)

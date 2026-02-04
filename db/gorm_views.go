@@ -138,6 +138,13 @@ func (g *GormDB) UpdateUserReviewStatus(userID, prID int, reviewStatus string) e
 		Update("review_status", reviewStatus).Error
 }
 
+// UpdateUserViaTeams updates the via_teams field for a user's PR view
+func (g *GormDB) UpdateUserViaTeams(userID, prID int, viaTeams []string) error {
+	return g.db.Model(&UserPRViewModel{}).
+		Where("user_id = ? AND pr_id = ?", userID, prID).
+		Update("via_teams", JSONStringArray(viaTeams)).Error
+}
+
 // HidePRForUser hides a PR from a user's view (soft delete)
 func (g *GormDB) HidePRForUser(userID, prID int) error {
 	return g.db.Model(&UserPRViewModel{}).
@@ -164,10 +171,11 @@ func (g *GormDB) EnsureUserPRView(userID, prID int, isAuthor bool) error {
 func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 	var results []struct {
 		PRModel
-		IsAuthor     bool   `gorm:"column:is_author"`
-		IsReviewer   bool   `gorm:"column:is_reviewer"`
-		UserNotes    string `gorm:"column:user_notes"`
-		ReviewStatus string `gorm:"column:review_status"`
+		IsAuthor     bool            `gorm:"column:is_author"`
+		IsReviewer   bool            `gorm:"column:is_reviewer"`
+		UserNotes    string          `gorm:"column:user_notes"`
+		ReviewStatus string          `gorm:"column:review_status"`
+		ViaTeams     JSONStringArray `gorm:"column:via_teams"`
 	}
 
 	err := g.db.Table("prs").
@@ -175,7 +183,8 @@ func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 			user_pr_views.is_author,
 			user_pr_views.is_reviewer,
 			user_pr_views.notes as user_notes,
-			user_pr_views.review_status`).
+			user_pr_views.review_status,
+			user_pr_views.via_teams`).
 		Joins("INNER JOIN user_pr_views ON prs.id = user_pr_views.pr_id").
 		Where("user_pr_views.user_id = ?", userID).
 		Where("user_pr_views.hidden = ?", false).
@@ -204,6 +213,7 @@ func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 			IsReviewer:   r.IsReviewer,
 			UserNotes:    r.UserNotes,
 			ReviewStatus: r.ReviewStatus,
+			ViaTeams:     r.ViaTeams,
 		}
 	}
 
