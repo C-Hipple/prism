@@ -387,3 +387,151 @@ func TestPRResponse_JSONSerialization_IsMine_False(t *testing.T) {
 	assert.True(t, exists, "is_mine field must exist in JSON output even when false")
 	assert.False(t, isMine.(bool), "is_mine should be false")
 }
+
+// =============================================================================
+// ViaTeams and ReviewStatus Tests - Ensures user_pr_views data is in API response
+// =============================================================================
+
+func TestHandleGetPRs_ViaTeams_IncludedInResponse(t *testing.T) {
+	server, database := newTestServer(t, "testuser")
+	defer database.Close()
+
+	user := createTestUser(t, database, "testuser")
+
+	pr := &db.PR{
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      1,
+		LastCommitSHA: "abc123",
+		Status:        "completed",
+		Title:         "Test PR",
+		Author:        "otheruser",
+	}
+	err := database.UpsertPR(pr)
+	require.NoError(t, err)
+
+	prFromDB, err := database.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+
+	// Create user_pr_view with via_teams
+	ensureUserPRView(t, database, user.ID, prFromDB.ID, false)
+	err = database.UpdateUserViaTeams(user.ID, prFromDB.ID, []string{"frontend-team", "reviewers"})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prs", nil)
+	req = addUserToRequest(req, user)
+	w := httptest.NewRecorder()
+
+	server.handleGetPRs(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response []PRResponse
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	require.NoError(t, err)
+	require.Len(t, response, 1)
+
+	// Verify via_teams is populated from user_pr_views
+	assert.Equal(t, []string{"frontend-team", "reviewers"}, response[0].ViaTeams,
+		"via_teams must be included in API response from user_pr_views")
+}
+
+func TestHandleGetPRs_ReviewStatus_IncludedInResponse(t *testing.T) {
+	server, database := newTestServer(t, "testuser")
+	defer database.Close()
+
+	user := createTestUser(t, database, "testuser")
+
+	pr := &db.PR{
+		RepoOwner:      "owner",
+		RepoName:       "repo",
+		PRNumber:       1,
+		LastCommitSHA:  "abc123",
+		Status:         "completed",
+		Title:          "Test PR",
+		Author:         "otheruser",
+		MyReviewStatus: "COMMENTED", // This is in prs table, should NOT be used
+	}
+	err := database.UpsertPR(pr)
+	require.NoError(t, err)
+
+	prFromDB, err := database.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+
+	// Create user_pr_view with different review status
+	ensureUserPRView(t, database, user.ID, prFromDB.ID, false)
+	err = database.UpdateUserReviewStatus(user.ID, prFromDB.ID, "APPROVED")
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prs", nil)
+	req = addUserToRequest(req, user)
+	w := httptest.NewRecorder()
+
+	server.handleGetPRs(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var response []PRResponse
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	require.NoError(t, err)
+	require.Len(t, response, 1)
+
+	// Verify review status comes from user_pr_views, NOT prs table
+	assert.Equal(t, "APPROVED", response[0].MyReviewStatus,
+		"my_review_status must come from user_pr_views, not prs table")
+}
+
+func TestPRResponse_JSONSerialization_ViaTeams_Exists(t *testing.T) {
+	response := PRResponse{
+		Owner:          "owner",
+		Repo:           "repo",
+		Number:         1,
+		CommitSHA:      "abc123",
+		Status:         "completed",
+		Title:          "Test PR",
+		Author:         "otheruser",
+		IsMine:         false,
+		ViaTeams:       []string{"team-a", "team-b"},
+		CIFailedChecks: []string{},
+	}
+
+	jsonBytes, err := json.Marshal(response)
+	require.NoError(t, err)
+
+	var decoded map[string]interface{}
+	err = json.Unmarshal(jsonBytes, &decoded)
+	require.NoError(t, err)
+
+	viaTeams, exists := decoded["via_teams"]
+	assert.True(t, exists, "via_teams field must exist in JSON output")
+	teams := viaTeams.([]interface{})
+	assert.Len(t, teams, 2)
+	assert.Equal(t, "team-a", teams[0].(string))
+	assert.Equal(t, "team-b", teams[1].(string))
+}
+
+func TestPRResponse_JSONSerialization_MyReviewStatus_Exists(t *testing.T) {
+	response := PRResponse{
+		Owner:          "owner",
+		Repo:           "repo",
+		Number:         1,
+		CommitSHA:      "abc123",
+		Status:         "completed",
+		Title:          "Test PR",
+		Author:         "otheruser",
+		IsMine:         false,
+		MyReviewStatus: "APPROVED",
+		CIFailedChecks: []string{},
+	}
+
+	jsonBytes, err := json.Marshal(response)
+	require.NoError(t, err)
+
+	var decoded map[string]interface{}
+	err = json.Unmarshal(jsonBytes, &decoded)
+	require.NoError(t, err)
+
+	status, exists := decoded["my_review_status"]
+	assert.True(t, exists, "my_review_status field must exist in JSON output")
+	assert.Equal(t, "APPROVED", status.(string))
+}
