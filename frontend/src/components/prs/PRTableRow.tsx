@@ -8,11 +8,13 @@ import { NotesCell } from './NotesCell';
 interface PRTableRowProps {
   pr: PR;
   showReviewColumns?: boolean;
+  showViaTeams?: boolean;
 }
 
 export const PRTableRow = memo(function PRTableRow({
   pr,
-  showReviewColumns = true
+  showReviewColumns = true,
+  showViaTeams = true
 }: PRTableRowProps) {
   const deleteMutation = useDeletePR();
   const triggerReviewMutation = useTriggerReview();
@@ -67,13 +69,19 @@ export const PRTableRow = memo(function PRTableRow({
         {pr.my_review_status === 'COMMENTED' && <span className="pr-table__my-review--commented" title="You commented">💬</span>}
         {!pr.my_review_status && <span className="pr-table__my-review--none" title="No review yet">-</span>}
       </td>
-      <td className="pr-table__via-teams">
-        {pr.via_teams && pr.via_teams.length > 0 ? (
-          <span title={pr.via_teams.join(', ')}>{pr.via_teams.join(', ')}</span>
-        ) : (
-          <span className="pr-table__via-teams--personal" title="Requested directly">@you</span>
-        )}
-      </td>
+      {showViaTeams && (
+        <td className="pr-table__via-teams">
+          {pr.via_teams && pr.via_teams.length > 0 ? (
+            pr.via_teams.includes('__PERSONAL__') ? (
+              <span className="pr-table__via-teams--personal" title="Requested directly">@you</span>
+            ) : (
+              <span title={pr.via_teams.join(', ')}>{pr.via_teams.join(', ')}</span>
+            )
+          ) : (
+            <span className="pr-table__via-teams--none" title="Via team (auto-assigned)">-</span>
+          )}
+        </td>
+      )}
       <td>
         <NotesCell
           owner={pr.owner}
