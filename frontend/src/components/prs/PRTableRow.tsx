@@ -4,6 +4,7 @@ import { CommitSha, StatusBadge } from '@/components/common';
 import { useDeletePR, useTriggerReview } from '@/hooks/usePRs';
 import { CIStatusIndicator } from './CIStatusIndicator';
 import { NotesCell } from './NotesCell';
+import { VIA_TEAMS_PERSONAL } from '@/constants';
 
 interface PRTableRowProps {
   pr: PR;
@@ -72,11 +73,15 @@ export const PRTableRow = memo(function PRTableRow({
       {showViaTeams && (
         <td className="pr-table__via-teams">
           {pr.via_teams && pr.via_teams.length > 0 ? (
-            pr.via_teams.includes('__PERSONAL__') ? (
-              <span className="pr-table__via-teams--personal" title="Requested directly">@you</span>
-            ) : (
-              <span title={pr.via_teams.join(', ')}>{pr.via_teams.join(', ')}</span>
-            )
+            (() => {
+              const hasPersonal = pr.via_teams.includes(VIA_TEAMS_PERSONAL);
+              const teams = pr.via_teams.filter(t => t !== VIA_TEAMS_PERSONAL);
+              const parts = [
+                ...(hasPersonal ? ['@you'] : []),
+                ...teams,
+              ];
+              return <span className={hasPersonal ? 'pr-table__via-teams--personal' : undefined} title={parts.join(', ')}>{parts.join(', ')}</span>;
+            })()
           ) : (
             <span className="pr-table__via-teams--none" title="Via team (auto-assigned)">-</span>
           )}

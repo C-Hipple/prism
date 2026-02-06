@@ -56,7 +56,7 @@ trap cleanup EXIT
 # Kill any existing process on port 5432 (stale proxy, local postgres, etc.)
 if lsof -i :5432 >/dev/null 2>&1; then
     echo "Killing existing process on port 5432..."
-    lsof -ti :5432 | xargs kill 2>/dev/null || true
+    lsof -ti :5432 | xargs kill -9 2>/dev/null || true
     sleep 1
 fi
 
