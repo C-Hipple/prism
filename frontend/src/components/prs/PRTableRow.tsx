@@ -6,6 +6,7 @@ import { useTelemetry } from '@/hooks/useTelemetry';
 import { CIStatusIndicator } from './CIStatusIndicator';
 import { NotesCell } from './NotesCell';
 import { ReviewLinkMenu } from './ReviewLinkMenu';
+import { RowActionsMenu } from './RowActionsMenu';
 import { VIA_TEAMS_PERSONAL } from '@/constants';
 
 interface PRTableRowProps {
@@ -115,45 +116,39 @@ export const PRTableRow = memo(function PRTableRow({
           <span className="pr-table__review-error" title={pr.error_message || 'Review failed'}>
             ERROR
           </span>
+        ) : pr.status === 'generating' || pr.status === 'agent_reviewing' ? (
+          <span
+            className={`pr-table__review-generating pr-table__review-generating--${
+              pr.status === 'agent_reviewing' ? 'agent' : 'gemini'
+            }`}
+            title="AI review in progress"
+          >
+            Generating…
+          </span>
         ) : reviewUrl ? (
           <ReviewLinkMenu pr={pr} reviewUrl={reviewUrl} />
         ) : (
-          <span>-</span>
+          // No up-to-date review: brand-new PR, or one whose prior review was
+          // cleared server-side after a new commit made it stale.
+          <button
+            type="button"
+            className="pr-table__generate-btn"
+            onClick={handleTriggerReview}
+            disabled={triggerReviewMutation.isPending}
+            title="Generate an AI review for this PR"
+          >
+            {triggerReviewMutation.isPending ? 'Starting…' : '🔄 Generate'}
+          </button>
         )}
       </td>
       <td>
-        <div className="pr-table__actions">
-          <button
-            className={`pr-table__action-btn${
-              triggerReviewMutation.isPending || pr.status === 'generating'
-                ? ' pr-table__action-btn--reviewing'
-                : pr.status === 'agent_reviewing'
-                  ? ' pr-table__action-btn--agent-reviewing'
-                  : ''
-            }`}
-            onClick={handleTriggerReview}
-            disabled={
-              triggerReviewMutation.isPending ||
-              pr.status === 'generating' ||
-              pr.status === 'agent_reviewing'
-            }
-            title="Generate or regenerate review for this PR"
-          >
-            {triggerReviewMutation.isPending ||
-            pr.status === 'generating' ||
-            pr.status === 'agent_reviewing'
-              ? 'REVIEWING'
-              : '🔄 Review'}
-          </button>
-          <button
-            className="pr-table__delete-btn"
-            onClick={handleDelete}
-            disabled={deleteMutation.isPending}
-            title="Remove from system"
-          >
-            {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
-          </button>
-        </div>
+        <RowActionsMenu
+          pr={pr}
+          onTriggerReview={handleTriggerReview}
+          onDelete={handleDelete}
+          reviewPending={triggerReviewMutation.isPending}
+          deletePending={deleteMutation.isPending}
+        />
       </td>
     </tr>
   );

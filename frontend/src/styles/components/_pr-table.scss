@@ -77,36 +77,6 @@
     width: 150px;
   }
 
-  &__action-btn {
-    @include button-base;
-    color: $color-link;
-    border-color: $color-link;
-
-    &:hover:not(:disabled) {
-      background: $color-link;
-      color: white;
-    }
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    &--reviewing,
-    &--reviewing:disabled {
-      color: $color-warning-text;
-      border-color: $color-warning;
-      opacity: 1;
-    }
-
-    &--agent-reviewing,
-    &--agent-reviewing:disabled {
-      color: $color-agent-reviewing-text;
-      border-color: $color-agent-reviewing;
-      opacity: 1;
-    }
-  }
-
   &__review-error {
     color: $color-error-text;
     font-weight: 700;
@@ -114,25 +84,18 @@
     cursor: help;
   }
 
-  &__delete-btn {
-    @include button-base;
-    color: $color-error;
-    border-color: $color-error;
-
-    &:hover {
-      background: $color-error;
-      color: white;
-    }
-  }
-
   &__review-cell {
     white-space: nowrap;
   }
 
-  &__actions {
-    display: flex;
-    gap: 4px;
-    flex-wrap: wrap;
+  // In-progress AI review indicator. Color follows the review stage: yellow
+  // for the Gemini pass (generating), orange for the agent pass.
+  &__review-generating {
+    font-weight: 600;
+    letter-spacing: 0.03em;
+
+    &--gemini { color: $color-warning-text; }
+    &--agent { color: $color-agent-reviewing-text; }
   }
 
   &__review-link {
@@ -150,6 +113,22 @@
       background: rgba($color-success, 0.12);
       border-color: $color-success;
       color: $color-link-hover;
+    }
+  }
+
+  &__generate-btn {
+    @include button-base;
+    color: $color-link;
+    border-color: $color-link;
+
+    &:hover:not(:disabled) {
+      background: $color-link;
+      color: white;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
   }
 
