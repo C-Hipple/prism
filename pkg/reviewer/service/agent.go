@@ -19,6 +19,9 @@ import (
 	"pr-review-server/pkg/reviewer/types"
 )
 
+// DefaultAgentModel is the `claude` model used when AgentConfig.Model is empty.
+const DefaultAgentModel = "claude-opus-4-8"
+
 // AgentConfig holds runtime knobs for a single agent-review invocation.
 type AgentConfig struct {
 	CloneRootDir string        // parent dir for per-invocation clones
@@ -26,6 +29,7 @@ type AgentConfig struct {
 	WallClock    time.Duration // hard wall-clock timeout
 	MaxTurns     int           // abort after this many assistant turns
 	GitHubToken  string        // optional; HTTPS clone auth
+	Model        string        // `claude` model id; defaults to DefaultAgentModel if empty
 }
 
 // AgentReview is the result of a successful agent run.
@@ -119,9 +123,14 @@ func RunAgentReview(
 		return nil, fmt.Errorf("agent: build prompt: %w", err)
 	}
 
+	model := agentCfg.Model
+	if model == "" {
+		model = DefaultAgentModel
+	}
+
 	args := []string{
 		"-p", prompt,
-		"--model", "claude-opus-4-7",
+		"--model", model,
 		"--effort", "medium",
 		"--tools", "Read,Grep,Glob,Bash",
 		"--permission-mode", "bypassPermissions",
@@ -131,8 +140,8 @@ func RunAgentReview(
 
 	// Log the argv without the full prompt (too big; promptAgentReview is static
 	// and the comment list is in geminiComments count above).
-	log.Printf("%s spawning claude (model=claude-opus-4-7, effort=medium, tools=Read,Grep,Glob,Bash, prompt_chars=%d)",
-		logPrefix, len(prompt))
+	log.Printf("%s spawning claude (model=%s, effort=medium, tools=Read,Grep,Glob,Bash, prompt_chars=%d)",
+		logPrefix, model, len(prompt))
 
 	spawnStart := time.Now()
 	proc, err := spawner.Spawn(runCtx, "claude", args, cloneDir)

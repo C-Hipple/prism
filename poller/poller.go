@@ -175,6 +175,7 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		WallClock:    time.Duration(p.cfg.AgentWallClockSec) * time.Second,
 		MaxTurns:     p.cfg.AgentMaxTurns,
 		GitHubToken:  gitToken,
+		Model:        p.cfg.AgentModel,
 	}
 	agentOut, agentErr := service.RunAgentReview(ctx, agentCfg, p.agentSpawner,
 		pr.Owner, pr.Repo, "", pr.Number, pr.CommitSHA, result.Comments)

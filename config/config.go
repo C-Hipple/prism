@@ -42,7 +42,8 @@ type Config struct {
 	AgentLogsDir       string
 	AgentWallClockSec  int
 	AgentMaxTurns      int
-	AgentMaxConcurrent int // <=0 disables the cap (unlimited concurrency)
+	AgentMaxConcurrent int    // <=0 disables the cap (unlimited concurrency)
+	AgentModel         string // `claude` model id for agent reviews (empty = service default)
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -112,6 +113,7 @@ func Load() *Config {
 		AgentWallClockSec:  getEnvIntOrDefault("AGENT_WALL_CLOCK_SEC", 360),
 		AgentMaxTurns:      getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
 		AgentMaxConcurrent: getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
+		AgentModel:         os.Getenv("AGENT_MODEL"),
 	}
 }
 
