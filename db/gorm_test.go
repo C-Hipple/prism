@@ -1307,6 +1307,101 @@ func TestGormDB_BatchUpsertUserPRViews_DropsOrphans(t *testing.T) {
 	assert.True(t, view.IsAuthor)
 }
 
+func TestGormDB_GetUserPRViewsWithViaTeams(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	alice := &User{GitHubID: 1, GitHubUsername: "alice"}
+	bob := &User{GitHubID: 2, GitHubUsername: "bob"}
+	require.NoError(t, db.CreateUser(alice))
+	require.NoError(t, db.CreateUser(bob))
+
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "o", RepoName: "r", PRNumber: 1, Status: "completed"}))
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "o", RepoName: "r", PRNumber: 2, Status: "completed"}))
+	pr1, _ := db.GetPR("o", "r", 1)
+	pr2, _ := db.GetPR("o", "r", 2)
+
+	teams := []string{"Platform:my_pending"}
+	approved := "APPROVED"
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: alice.ID, PRID: pr1.ID, ViaTeams: &teams, ReviewStatus: &approved},
+		{UserID: bob.ID, PRID: pr1.ID},                     // via_teams never set (NULL)
+		{UserID: alice.ID, PRID: pr2.ID, ViaTeams: &teams}, // filtered out by prIDs
+	}))
+	// An explicitly-empty via_teams must also be excluded.
+	empty := []string{}
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: bob.ID, PRID: pr2.ID, ViaTeams: &empty},
+	}))
+
+	views, err := db.GetUserPRViewsWithViaTeams([]int{pr1.ID})
+	require.NoError(t, err)
+	require.Len(t, views, 1, "only the non-empty via_teams row for pr1 should match")
+	assert.Equal(t, alice.ID, views[0].UserID)
+	assert.Equal(t, pr1.ID, views[0].PRID)
+	assert.JSONEq(t, `["Platform:my_pending"]`, views[0].ViaTeams)
+	assert.Equal(t, "APPROVED", views[0].ReviewStatus)
+	assert.False(t, views[0].Hidden)
+
+	// Both PRs in scope → pr2's alice row joins the result.
+	views, err = db.GetUserPRViewsWithViaTeams([]int{pr1.ID, pr2.ID})
+	require.NoError(t, err)
+	assert.Len(t, views, 2)
+
+	// No PR IDs → no rows, no error.
+	views, err = db.GetUserPRViewsWithViaTeams(nil)
+	require.NoError(t, err)
+	assert.Empty(t, views)
+}
+
+func TestGormDB_BatchPruneViaTeams(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	alice := &User{GitHubID: 1, GitHubUsername: "alice"}
+	bob := &User{GitHubID: 2, GitHubUsername: "bob"}
+	require.NoError(t, db.CreateUser(alice))
+	require.NoError(t, db.CreateUser(bob))
+
+	require.NoError(t, db.UpsertPR(&PR{RepoOwner: "o", RepoName: "r", PRNumber: 1, Status: "completed"}))
+	pr1, _ := db.GetPR("o", "r", 1)
+
+	teams := []string{"Platform:my_pending"}
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: alice.ID, PRID: pr1.ID, ViaTeams: &teams},
+		{UserID: bob.ID, PRID: pr1.ID, IsAuthor: true, ViaTeams: &teams},
+	}))
+
+	err := db.BatchPruneViaTeams([]ViaTeamsPrune{
+		{UserID: alice.ID, PRID: pr1.ID, Hide: true},
+		{UserID: bob.ID, PRID: pr1.ID, Hide: false},
+		{UserID: alice.ID, PRID: pr1.ID + 9999, Hide: true}, // nonexistent row is a no-op
+	})
+	require.NoError(t, err)
+
+	// Both rows cleared: neither qualifies for the reconciliation query anymore.
+	views, err := db.GetUserPRViewsWithViaTeams([]int{pr1.ID})
+	require.NoError(t, err)
+	assert.Empty(t, views, "pruned rows must have empty via_teams")
+
+	// Hidden semantics: alice's row is gone from her dashboard, bob's stays.
+	alicePRs, err := db.GetPRsForUser(alice.ID)
+	require.NoError(t, err)
+	assert.Empty(t, alicePRs, "hidden row must not surface on the dashboard")
+
+	bobPRs, err := db.GetPRsForUser(bob.ID)
+	require.NoError(t, err)
+	require.Len(t, bobPRs, 1, "non-hidden row must stay visible")
+
+	// A later upsert (user rejoins the team) un-hides alice's row again.
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: alice.ID, PRID: pr1.ID, ViaTeams: &teams},
+	}))
+	alicePRs, err = db.GetPRsForUser(alice.ID)
+	require.NoError(t, err)
+	assert.Len(t, alicePRs, 1, "rejoining the team must restore visibility")
+}
+
 func TestGormDB_CIFailedChecks_JSONHandling(t *testing.T) {
 	db := newTestDB(t)
 	defer db.Close()

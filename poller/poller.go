@@ -1412,17 +1412,24 @@ func (p *Poller) poll(ctx context.Context) {
 		}
 
 		teamMembersMap := map[string][]string{}
+		failedSlugs := map[string]bool{}
 		if orgName != "" {
 			uniqueSlugs := collectUniqueSlugs(reviewerGroupsMap)
 			for slug := range uniqueSlugs {
 				members, err := p.getTeamMembers(ctx, orgName, slug)
 				if err != nil {
 					log.Printf("[POLL] Warning: Failed to get members for team %s: %v", slug, err)
+					failedSlugs[slug] = true
 					continue
 				}
 				teamMembersMap[slug] = members
 			}
 		}
+
+		// Tracks (user, PR) pairs verified this cycle as still having a reason
+		// to see the PR via teams. The reconciliation pass below prunes rows
+		// with fresh reviewer-group data that are NOT in this set.
+		entitled := make(map[userPRViewKey]bool)
 
 		groupsViewBatch := newViewBatch()
 		for _, pr := range allPRs {
@@ -1471,6 +1478,7 @@ func (p *Poller) poll(ctx context.Context) {
 				if !isOnTeam && !isPersonallyRequested {
 					continue
 				}
+				entitled[userPRViewKey{UserID: user.ID, PRID: existingPR.ID}] = true
 
 				teamStatuses := resolveTeamReviewStatuses(
 					groupData.ReviewerGroups,
@@ -1503,6 +1511,8 @@ func (p *Poller) poll(ctx context.Context) {
 			log.Printf("[POLL] ERROR: Failed to batch-upsert reviewer group views: %v", err)
 		}
 		log.Printf("[POLL] Updated reviewer groups for %d PRs", len(reviewerGroupsMap))
+
+		p.pruneStaleViaTeams(ctx, orgName, allPRs, dbPRMap, reviewerGroupsMap, entitled, failedSlugs, allUsers, changedPRs)
 	}
 
 	// --- Process CI status ---

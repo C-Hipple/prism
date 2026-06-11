@@ -279,6 +279,73 @@ func (g *GormDB) BatchUpsertUserPRViews(items []UserPRViewBatchItem) error {
 	return nil
 }
 
+// GetUserPRViewsWithViaTeams returns all user_pr_views rows whose pr_id is in
+// prIDs and whose via_teams holds at least one entry. Used by the poller's
+// via_teams reconciliation pass (rows with empty via_teams have nothing to prune).
+func (g *GormDB) GetUserPRViewsWithViaTeams(prIDs []int) ([]UserPRView, error) {
+	if len(prIDs) == 0 {
+		return nil, nil
+	}
+
+	var models []UserPRViewModel
+	err := g.db.
+		Where("pr_id IN ?", prIDs).
+		Where("via_teams IS NOT NULL AND via_teams NOT IN ('', '[]', 'null')").
+		Find(&models).Error
+	if err != nil {
+		return nil, err
+	}
+
+	views := make([]UserPRView, len(models))
+	for i, m := range models {
+		viaTeams := "[]"
+		if m.ViaTeams != nil {
+			if bytes, err := json.Marshal(m.ViaTeams); err == nil {
+				viaTeams = string(bytes)
+			}
+		}
+		views[i] = UserPRView{
+			ID:           int(m.ID),
+			UserID:       int(m.UserID),
+			PRID:         int(m.PRID),
+			IsAuthor:     m.IsAuthor,
+			IsReviewer:   m.IsReviewer,
+			ViaTeams:     viaTeams,
+			ReviewStatus: m.ReviewStatus,
+			Notes:        m.Notes,
+			Hidden:       m.Hidden,
+		}
+	}
+	return views, nil
+}
+
+// BatchPruneViaTeams clears via_teams on the given rows, additionally hiding
+// the ones marked Hide. This is the deliberate counterpart to the
+// shouldUpdateViaTeams guard: the poller calls it only for rows it has
+// positively verified as stale (user off all reviewer teams, not personally
+// requested), so writing an empty via_teams here is correct, not accidental.
+func (g *GormDB) BatchPruneViaTeams(prunes []ViaTeamsPrune) error {
+	if len(prunes) == 0 {
+		return nil
+	}
+
+	return g.db.Transaction(func(tx *gorm.DB) error {
+		for _, p := range prunes {
+			updates := map[string]interface{}{"via_teams": JSONStringArray{}}
+			if p.Hide {
+				updates["hidden"] = true
+			}
+			err := tx.Model(&UserPRViewModel{}).
+				Where("user_id = ? AND pr_id = ?", p.UserID, p.PRID).
+				Updates(updates).Error
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // DeleteAllUserPRViews removes all user_pr_view records for a user.
 // Used in dev mode to reset stale views on startup.
 func (g *GormDB) DeleteAllUserPRViews(userID int) (int64, error) {
