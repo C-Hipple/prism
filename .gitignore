@@ -62,3 +62,7 @@ data/agent-logs/*
 # Claude Code
 .claude/
 cloud-sql-proxy
+
+# Local-only ops docs — never commit
+ARCHITECTURE.md
+DEPLOY.md
