@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-die() { echo "prism-review: $*" >&2; exit "${2:-2}"; }
+die() { echo "prism-review: $1" >&2; exit "${2:-2}"; }
 
 BASE_URL="${PRISM_BASE_URL:-}"
 if [ -z "$BASE_URL" ]; then
@@ -166,10 +166,10 @@ jq -r '
   "Schema: \(.schema_version // "unknown")",
   "",
   (if .findings_available then
-     "=== FINDINGS (\(.findings | length)) ===",
-     (.findings[] |
+     "=== FINDINGS (\((.findings // []) | length)) ===",
+     ((.findings // [])[] |
        "",
-       "--- [\(.severity | ascii_upcase)] \(.file):\(.line) ---",
+       "--- [\((.severity // "unknown") | ascii_upcase)] \(.file):\(.line) ---",
        "",
        "COMMENT:",
        .comment,
@@ -180,9 +180,9 @@ jq -r '
        (if (.source_before | length) > 0 or (.source_after | length) > 0 then
           ("SOURCE CONTEXT (cited line is the LAST line of source_before):",
            "```",
-           (.source_before // [] | to_entries | map(.value) | .[]),
+           (.source_before // [])[],
            "----- cited line above -----",
-           (.source_after // [] | to_entries | map(.value) | .[]),
+           (.source_after // [])[],
            "```", "")
         else empty end)
      )
