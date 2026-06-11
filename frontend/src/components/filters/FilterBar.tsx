@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { usePRs } from '@/hooks/usePRs';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useTelemetry } from '@/hooks/useTelemetry';
-import { VIA_TEAMS_PERSONAL } from '@/constants';
+import { getTeamFilterName } from '@/utils/teamFilters';
 import './FilterBar.scss';
 
 interface FilterBarProps {
@@ -12,15 +12,6 @@ interface FilterBarProps {
   onTeamsChange: (teams: string[]) => void;
   selectedRepos: string[];
   onReposChange: (repos: string[]) => void;
-}
-
-function getTeamFilterName(team: string, username?: string): string {
-  if (team === VIA_TEAMS_PERSONAL) {
-    return username ? `@${username}` : '@you';
-  }
-
-  const suffixIndex = team.lastIndexOf(':');
-  return suffixIndex === -1 ? team : team.slice(0, suffixIndex);
 }
 
 export function FilterBar({

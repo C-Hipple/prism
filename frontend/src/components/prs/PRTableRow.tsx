@@ -7,7 +7,7 @@ import { CIStatusIndicator } from './CIStatusIndicator';
 import { NotesCell } from './NotesCell';
 import { ReviewLinkMenu } from './ReviewLinkMenu';
 import { RowActionsMenu } from './RowActionsMenu';
-import { VIA_TEAMS_PERSONAL } from '@/constants';
+import { buildViaTeamParts } from '@/utils/teamFilters';
 
 interface PRTableRowProps {
   pr: PR;
@@ -73,20 +73,7 @@ export const PRTableRow = memo(function PRTableRow({
         <td className="pr-table__via-teams">
           {pr.via_teams && pr.via_teams.length > 0 ? (
             (() => {
-              const hasPersonal = pr.via_teams.includes(VIA_TEAMS_PERSONAL);
-              const teamEntries = pr.via_teams
-                .filter(t => t !== VIA_TEAMS_PERSONAL)
-                .map(t => {
-                  const colonIdx = t.indexOf(':');
-                  if (colonIdx >= 0) {
-                    return { name: t.slice(0, colonIdx), status: t.slice(colonIdx + 1) };
-                  }
-                  return { name: t, status: 'pending' };
-                });
-              const parts = [
-                ...(hasPersonal ? [{ name: '@you', status: 'personal' }] : []),
-                ...teamEntries,
-              ];
+              const parts = buildViaTeamParts(pr.via_teams);
               return (
                 <span title={parts.map(p => `${p.name} (${p.status})`).join(', ')}>
                   {parts.map((p, i) => (

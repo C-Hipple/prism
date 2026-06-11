@@ -5,7 +5,7 @@ import { useTelemetry } from '@/hooks/useTelemetry';
 import { PRTable } from './PRTable';
 import { LoadingSpinner, ErrorMessage } from '@/components/common';
 import { PR } from '@/types/pr';
-import { VIA_TEAMS_PERSONAL } from '@/constants';
+import { getTeamFilterName } from '@/utils/teamFilters';
 import { TriageFilter, categorizePR } from './triageUtils';
 import './SectionHeader.scss';
 
@@ -21,15 +21,6 @@ interface FilterOptions {
   selectedTeams?: string[];
   selectedRepos?: string[];
   username?: string;
-}
-
-function getTeamFilterName(team: string, username?: string): string {
-  if (team === VIA_TEAMS_PERSONAL) {
-    return username ? `@${username}` : '@you';
-  }
-
-  const suffixIndex = team.lastIndexOf(':');
-  return suffixIndex === -1 ? team : team.slice(0, suffixIndex);
 }
 
 function filterAndSortPRs(prs: PR[], { searchTerm, selectedTeams, selectedRepos, username }: FilterOptions): PR[] {
