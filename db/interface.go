@@ -93,7 +93,8 @@ type UserPRViewBatchItem struct {
 // ViaTeamsPrune identifies a stale user_pr_views row whose via_teams should be
 // cleared because the user is no longer on any of the PR's reviewer teams and
 // is not personally requested. Hide additionally hides the row when nothing
-// else (authorship, review activity) keeps the PR on the user's dashboard.
+// else (authorship, review activity, user notes) keeps the PR on the user's
+// dashboard.
 type ViaTeamsPrune struct {
 	UserID int
 	PRID   int

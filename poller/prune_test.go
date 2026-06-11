@@ -141,6 +141,26 @@ func TestPruneStaleViaTeams_FreshData_FailedSlugSkipsPR(t *testing.T) {
 	}
 }
 
+func TestPruneStaleViaTeams_FreshData_RowWithNotesClearedNotHidden(t *testing.T) {
+	mockDB, mockGH, allPRs, dbPRMap, users := pruneFixture(`["Platform:pending"]`)
+	mockDB.UserPRViews[viewMockKey(1, 10)].Notes = "check perf"
+	poller := newTestPoller(mockGH, mockDB)
+
+	poller.pruneStaleViaTeams(context.Background(), "testorg", allPRs, dbPRMap,
+		freshGroupData("Platform"), map[userPRViewKey]bool{}, nil, users, map[string]bool{})
+
+	if len(mockDB.BatchPruneViaTeamsCalls) != 1 {
+		t.Fatalf("expected 1 prune call, got %d", len(mockDB.BatchPruneViaTeamsCalls))
+	}
+	if mockDB.BatchPruneViaTeamsCalls[0][0].Hide {
+		t.Error("expected Hide=false: hiding would bury the user's notes")
+	}
+	view := mockDB.UserPRViews[viewMockKey(1, 10)]
+	if view.ViaTeams != "[]" || view.Hidden {
+		t.Errorf("expected cleared but visible view, got via_teams=%q hidden=%v", view.ViaTeams, view.Hidden)
+	}
+}
+
 func TestPruneStaleViaTeams_UnchangedPR_StillMemberKept(t *testing.T) {
 	mockDB, mockGH, allPRs, dbPRMap, users := pruneFixture(`["Platform:my_pending"]`)
 	mockGH.GetOrgTeamMembersFunc = func(ctx context.Context, orgName, teamSlug string) ([]string, error) {

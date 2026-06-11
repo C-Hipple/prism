@@ -17,7 +17,8 @@ import (
 // team is removed from a PR, the stale row would otherwise live forever. This
 // pass verifies every non-empty via_teams row for the polled PRs and clears
 // the ones whose entitlement is gone, hiding the row when nothing else
-// (authorship, review activity) keeps the PR on the user's dashboard.
+// (authorship, review activity, user notes) keeps the PR on the user's
+// dashboard.
 //
 // Two verification paths:
 //   - PRs with fresh reviewer-group data this cycle are checked against the
@@ -116,7 +117,9 @@ func (p *Poller) pruneStaleViaTeams(
 		prunes = append(prunes, db.ViaTeamsPrune{
 			UserID: row.UserID,
 			PRID:   row.PRID,
-			Hide:   !row.IsAuthor && row.ReviewStatus == "",
+			// Notes keep the row visible: hiding it would bury user-written
+			// notes with no UI path back to them.
+			Hide: !row.IsAuthor && row.ReviewStatus == "" && row.Notes == "",
 		})
 	}
 
