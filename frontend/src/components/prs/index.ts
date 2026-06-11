@@ -1,5 +1,6 @@
 export { PRTable } from './PRTable';
 export { PRTableRow } from './PRTableRow';
+export { RowActionsMenu } from './RowActionsMenu';
 export { ReviewPRsSection } from './ReviewPRsSection';
 export { AutoReviewToggle } from './AutoReviewToggle';
 export { TriageSummary } from './TriageSummary';

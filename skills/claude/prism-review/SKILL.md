@@ -45,7 +45,7 @@ code, form your own opinion, and report back. Do NOT edit files unless the
 user explicitly asked you to apply / fix / handle the suggestions in their
 original message. If unsure, ask before editing.
 
-0. **Check the status header first.** Three states can come back:
+0. **Check the status header first.** Four states can come back:
    - `Status: review is in flight` — no findings yet. Tell the user the
      review is still generating and that they can retry in ~30 seconds (or
      you can poll for them by re-running the skill).

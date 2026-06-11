@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { PR } from '@/types/pr';
 import { useTelemetry } from '@/hooks/useTelemetry';
+import { useDropdown } from '@/hooks/useDropdown';
 import { formatRelativeTime } from '@/utils/formatDate';
 import './ReviewLinkMenu.scss';
 
@@ -15,22 +16,19 @@ interface ReviewLinkMenuProps {
 const PANEL_WIDTH = 240;
 const OPEN_DELAY_MS = 250;
 const CLOSE_DELAY_MS = 200;
-const VIEWPORT_MARGIN = 8;
-
-interface PanelPosition {
-  top: number;
-  left: number;
-}
 
 export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
   const { track } = useTelemetry();
-  const anchorRef = useRef<HTMLSpanElement>(null);
+  // Positioning + reflow live in the shared hook; this menu drives open/close
+  // off hover timers rather than clicks, so it wraps open()/close().
+  const { isOpen, open, close, anchorRef, panelRef, position } = useDropdown({
+    panelWidth: PANEL_WIDTH,
+    align: 'right',
+  });
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [isOpen, setIsOpen] = useState(false);
-  const [position, setPosition] = useState<PanelPosition>({ top: 0, left: 0 });
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle');
 
   const trackOpts = useMemo(
@@ -44,16 +42,6 @@ export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
     () => `/api/review/${pr.owner}/${pr.repo}/${pr.number}?format=md`,
     [pr.owner, pr.repo, pr.number]
   );
-
-  const computePosition = useCallback(() => {
-    const el = anchorRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    // Right-align the panel to the link, clamped within the viewport.
-    const maxLeft = window.innerWidth - PANEL_WIDTH - VIEWPORT_MARGIN;
-    const left = Math.max(VIEWPORT_MARGIN, Math.min(rect.right - PANEL_WIDTH, maxLeft));
-    setPosition({ top: rect.bottom + 6, left });
-  }, []);
 
   const clearTimers = useCallback(() => {
     if (openTimer.current) clearTimeout(openTimer.current);
@@ -70,10 +58,9 @@ export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
     if (isOpen || openTimer.current) return;
     openTimer.current = setTimeout(() => {
       openTimer.current = null;
-      computePosition();
-      setIsOpen(true);
+      open();
     }, OPEN_DELAY_MS);
-  }, [isOpen, computePosition]);
+  }, [isOpen, open]);
 
   const scheduleClose = useCallback(() => {
     if (openTimer.current) {
@@ -83,21 +70,9 @@ export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
     if (closeTimer.current) return;
     closeTimer.current = setTimeout(() => {
       closeTimer.current = null;
-      setIsOpen(false);
+      close();
     }, CLOSE_DELAY_MS);
-  }, []);
-
-  // Reposition while open if the page scrolls or resizes.
-  useEffect(() => {
-    if (!isOpen) return;
-    const onReflow = () => computePosition();
-    window.addEventListener('scroll', onReflow, true);
-    window.addEventListener('resize', onReflow);
-    return () => {
-      window.removeEventListener('scroll', onReflow, true);
-      window.removeEventListener('resize', onReflow);
-    };
-  }, [isOpen, computePosition]);
+  }, [close]);
 
   // Clean up any pending timers on unmount.
   useEffect(() => () => {
@@ -133,7 +108,7 @@ export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
 
   return (
     <span
-      ref={anchorRef}
+      ref={anchorRef as React.RefObject<HTMLSpanElement>}
       className="review-menu__anchor"
       onMouseEnter={scheduleOpen}
       onMouseLeave={scheduleClose}
@@ -150,6 +125,7 @@ export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
 
       {isOpen && createPortal(
         <div
+          ref={panelRef}
           className="review-menu"
           role="menu"
           style={{ top: position.top, left: position.left, width: PANEL_WIDTH }}
