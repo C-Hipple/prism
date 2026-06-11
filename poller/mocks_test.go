@@ -2,6 +2,7 @@ package poller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -287,6 +288,14 @@ type MockDatabase struct {
 	// User PR assignments (keyed by "userID/prID")
 	UserPRAssignments map[string]*db.UserPRAssignment
 
+	// User PR views (keyed by "userID/prID"), maintained by
+	// BatchUpsertUserPRViews and BatchPruneViaTeams so multi-cycle poll tests
+	// observe the same state evolution as the real database.
+	UserPRViews map[string]*db.UserPRView
+
+	// Track prune calls for verification
+	BatchPruneViaTeamsCalls [][]db.ViaTeamsPrune
+
 	// Error injection
 	DeletePRError          error
 	UpdatePRStatusError    error
@@ -297,6 +306,7 @@ type MockDatabase struct {
 func NewMockDatabase() *MockDatabase {
 	return &MockDatabase{
 		PRs:               make(map[string]*db.PR),
+		UserPRViews:       make(map[string]*db.UserPRView),
 		AutoReviewEnabled: true,
 		ReviewNRequests:   3,
 	}
@@ -692,6 +702,64 @@ func (m *MockDatabase) BatchUpsertUserPRViews(items []db.UserPRViewBatchItem) er
 				PRID     int
 				ViaTeams []string
 			}{item.UserID, item.PRID, *item.ViaTeams})
+		}
+
+		// Mirror the real upsert semantics into the view store: every upsert
+		// un-hides the row; optional fields only overwrite when set.
+		key := viewMockKey(item.UserID, item.PRID)
+		view, exists := m.UserPRViews[key]
+		if !exists {
+			view = &db.UserPRView{UserID: item.UserID, PRID: item.PRID, ViaTeams: "[]"}
+			m.UserPRViews[key] = view
+		}
+		view.IsAuthor = item.IsAuthor
+		view.Hidden = false
+		if item.ReviewStatus != nil {
+			view.ReviewStatus = *item.ReviewStatus
+		}
+		if item.ViaTeams != nil {
+			if bytes, err := json.Marshal(*item.ViaTeams); err == nil {
+				view.ViaTeams = string(bytes)
+			}
+		}
+	}
+	return nil
+}
+
+func viewMockKey(userID, prID int) string {
+	return fmt.Sprintf("%d/%d", userID, prID)
+}
+
+func (m *MockDatabase) GetUserPRViewsWithViaTeams(prIDs []int) ([]db.UserPRView, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	idSet := make(map[int]bool, len(prIDs))
+	for _, id := range prIDs {
+		idSet[id] = true
+	}
+	var views []db.UserPRView
+	for _, view := range m.UserPRViews {
+		if !idSet[view.PRID] {
+			continue
+		}
+		if view.ViaTeams == "" || view.ViaTeams == "[]" || view.ViaTeams == "null" {
+			continue
+		}
+		views = append(views, *view)
+	}
+	return views, nil
+}
+
+func (m *MockDatabase) BatchPruneViaTeams(prunes []db.ViaTeamsPrune) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.BatchPruneViaTeamsCalls = append(m.BatchPruneViaTeamsCalls, prunes)
+	for _, p := range prunes {
+		if view, ok := m.UserPRViews[viewMockKey(p.UserID, p.PRID)]; ok {
+			view.ViaTeams = "[]"
+			if p.Hide {
+				view.Hidden = true
+			}
 		}
 	}
 	return nil

@@ -90,6 +90,16 @@ type UserPRViewBatchItem struct {
 	ViaTeams     *[]string // nil = don't update
 }
 
+// ViaTeamsPrune identifies a stale user_pr_views row whose via_teams should be
+// cleared because the user is no longer on any of the PR's reviewer teams and
+// is not personally requested. Hide additionally hides the row when nothing
+// else (authorship, review activity) keeps the PR on the user's dashboard.
+type ViaTeamsPrune struct {
+	UserID int
+	PRID   int
+	Hide   bool
+}
+
 // PRWithUserView combines PR data with user-specific view data
 type PRWithUserView struct {
 	PR
@@ -207,6 +217,8 @@ type Database interface {
 	// Batch operations (used by poller for efficiency)
 	BatchUpsertPRs(prs []*PR) error
 	BatchUpsertUserPRViews(views []UserPRViewBatchItem) error
+	GetUserPRViewsWithViaTeams(prIDs []int) ([]UserPRView, error)
+	BatchPruneViaTeams(prunes []ViaTeamsPrune) error
 
 	// Telemetry operations
 	CreateTelemetryEvents(events []TelemetryEvent) error

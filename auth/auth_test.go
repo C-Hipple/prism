@@ -170,8 +170,12 @@ func (m *MockDatabase) HidePRForUser(userID, prID int) error                    
 func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error       { return nil }
 func (m *MockDatabase) BatchUpsertPRs(prs []*db.PR) error                            { return nil }
 func (m *MockDatabase) BatchUpsertUserPRViews(views []db.UserPRViewBatchItem) error  { return nil }
-func (m *MockDatabase) MigrateLegacyNotes(userID int) (int, error)                   { return 0, nil }
-func (m *MockDatabase) CreateTelemetryEvents(events []db.TelemetryEvent) error       { return nil }
+func (m *MockDatabase) GetUserPRViewsWithViaTeams(prIDs []int) ([]db.UserPRView, error) {
+	return nil, nil
+}
+func (m *MockDatabase) BatchPruneViaTeams(prunes []db.ViaTeamsPrune) error     { return nil }
+func (m *MockDatabase) MigrateLegacyNotes(userID int) (int, error)             { return 0, nil }
+func (m *MockDatabase) CreateTelemetryEvents(events []db.TelemetryEvent) error { return nil }
 func (m *MockDatabase) GetTelemetryStats(days int) (*db.TelemetryStats, error) {
 	return &db.TelemetryStats{}, nil
 }
