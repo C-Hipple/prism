@@ -2,10 +2,14 @@ package github
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -233,4 +237,82 @@ func (t *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	}
 	newReq.Header = req.Header
 	return http.DefaultTransport.RoundTrip(newReq)
+}
+
+// TestBatchGetReviewerGroups_ChunksLargeBatch verifies the fix for the silent
+// GraphQL truncation bug: a repo with more PRs than reviewerGroupsChunkSize must
+// be split across multiple bounded queries, and every PR's reviewer group must
+// come back (not just those that would have fit in one oversized query).
+func TestBatchGetReviewerGroups_ChunksLargeBatch(t *testing.T) {
+	prNumRe := regexp.MustCompile(`number: (\d+)`)
+
+	var mu sync.Mutex
+	var requestCount int
+	maxAliasesPerRequest := 0
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		nums := prNumRe.FindAllStringSubmatch(string(body), -1)
+
+		mu.Lock()
+		requestCount++
+		if len(nums) > maxAliasesPerRequest {
+			maxAliasesPerRequest = len(nums)
+		}
+		mu.Unlock()
+
+		// Respond with one team per PR, aliased pr0..prN in request order, so a
+		// dropped/mis-merged chunk would show up as a missing result.
+		var sb strings.Builder
+		sb.WriteString(`{"data":{`)
+		for i, m := range nums {
+			if i > 0 {
+				sb.WriteString(",")
+			}
+			fmt.Fprintf(&sb, `"pr%d":{"pullRequest":{"number":%s,"timelineItems":{"nodes":[{"requestedReviewer":{"__typename":"Team","name":"team-%s","slug":"team-%s"}}]}}}`,
+				i, m[1], m[1], m[1])
+		}
+		sb.WriteString(`}}`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sb.String()))
+	}))
+	defer ts.Close()
+
+	client := NewClient("dummy-token", "test-user")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	const total = 60 // > 2 chunks of 25
+	var prs []PullRequest
+	for n := 1; n <= total; n++ {
+		prs = append(prs, PullRequest{Owner: "owner", Repo: "repo", Number: n})
+	}
+
+	results, err := client.BatchGetReviewerGroups(context.Background(), prs)
+	if err != nil {
+		t.Fatalf("BatchGetReviewerGroups failed: %v", err)
+	}
+
+	if len(results) != total {
+		t.Errorf("expected %d results, got %d (PRs lost across chunks)", total, len(results))
+	}
+	for n := 1; n <= total; n++ {
+		key := fmt.Sprintf("owner/repo/%d", n)
+		data, ok := results[key]
+		if !ok {
+			t.Errorf("missing result for PR %d", n)
+			continue
+		}
+		want := fmt.Sprintf("team-%d", n)
+		if len(data.ReviewerGroups) != 1 || data.ReviewerGroups[0] != want {
+			t.Errorf("PR %d: expected [%s], got %v", n, want, data.ReviewerGroups)
+		}
+	}
+
+	wantRequests := (total + reviewerGroupsChunkSize - 1) / reviewerGroupsChunkSize
+	if requestCount != wantRequests {
+		t.Errorf("expected %d chunked requests, got %d", wantRequests, requestCount)
+	}
+	if maxAliasesPerRequest > reviewerGroupsChunkSize {
+		t.Errorf("a request carried %d PRs, exceeding chunk size %d", maxAliasesPerRequest, reviewerGroupsChunkSize)
+	}
 }

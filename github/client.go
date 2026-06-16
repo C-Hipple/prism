@@ -791,8 +791,40 @@ func (c *Client) BatchGetReviewerGroups(ctx context.Context, prs []PullRequest) 
 	return results, nil
 }
 
-// fetchReviewerGroupsForRepo fetches reviewer groups for all PRs in a single repository using GraphQL
+// reviewerGroupsChunkSize bounds how many PRs go into a single batched GraphQL
+// query. GitHub silently truncates oversized batched queries: connections past
+// an internal cost threshold return empty `nodes` with NO entry in the response
+// `errors` array. A large repo's PRs that landed late in one giant query lost
+// their reviewer teams, so the PRs vanished from team members' dashboards.
+// Chunking keeps each query small enough to fully resolve. Verified: the same
+// PRs that returned empty at position ~140+ in one query return their teams
+// when queried in a chunk of this size.
+const reviewerGroupsChunkSize = 25
+
+// fetchReviewerGroupsForRepo fetches reviewer groups for all PRs in a single
+// repository, splitting them into bounded chunks (see reviewerGroupsChunkSize)
+// so no single GraphQL query is large enough to be silently truncated.
 func (c *Client) fetchReviewerGroupsForRepo(ctx context.Context, prs []PullRequest) (map[string]*ReviewerGroupData, error) {
+	results := make(map[string]*ReviewerGroupData)
+	for start := 0; start < len(prs); start += reviewerGroupsChunkSize {
+		end := start + reviewerGroupsChunkSize
+		if end > len(prs) {
+			end = len(prs)
+		}
+		chunkResults, err := c.fetchReviewerGroupsChunk(ctx, prs[start:end])
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range chunkResults {
+			results[k] = v
+		}
+	}
+	return results, nil
+}
+
+// fetchReviewerGroupsChunk fetches reviewer groups for a single bounded batch of
+// PRs in one repository via one GraphQL query.
+func (c *Client) fetchReviewerGroupsChunk(ctx context.Context, prs []PullRequest) (map[string]*ReviewerGroupData, error) {
 	if len(prs) == 0 {
 		return make(map[string]*ReviewerGroupData), nil
 	}
