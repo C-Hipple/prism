@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,15 @@ import (
 )
 
 const graphQLEndpoint = "https://api.github.com/graphql"
+
+// ErrGraphQLRateLimited is returned when a GraphQL response carries a
+// rate-limit error. GitHub still returns HTTP 200 with whatever partial data
+// it managed, but that data is unreliable (aliases come back null), so callers
+// must NOT treat it as authoritative — in particular the poller must not prune
+// via_teams off rows that merely appear unentitled because the fetch was
+// throttled. Distinct error type so callers can tell throttling apart from a
+// genuine failure or a genuinely-empty result.
+var ErrGraphQLRateLimited = errors.New("github: GraphQL rate limit exceeded")
 
 // decodeGraphQLResponse decodes a GraphQL HTTP response body into result, after
 // surfacing any GraphQL-level errors. GitHub returns HTTP 200 even for PARTIAL
@@ -34,15 +44,25 @@ func decodeGraphQLResponse(label string, body io.Reader, result interface{}) err
 			Path    []interface{} `json:"path"`
 		} `json:"errors"`
 	}
+	rateLimited := false
 	if json.Unmarshal(raw, &envelope) == nil {
 		for _, e := range envelope.Errors {
 			log.Printf("[GRAPHQL] %s partial error: type=%s path=%v message=%s",
 				label, e.Type, e.Path, e.Message)
+			if e.Type == "RATE_LIMITED" || strings.Contains(strings.ToLower(e.Message), "rate limit") {
+				rateLimited = true
+			}
 		}
 	}
 
 	if err := json.Unmarshal(raw, result); err != nil {
 		return fmt.Errorf("failed to decode GraphQL response: %w", err)
+	}
+	// Surface rate limiting AFTER decoding so callers that want partial data can
+	// still read it, but the default path (return on error) discards throttled
+	// data rather than acting on it.
+	if rateLimited {
+		return ErrGraphQLRateLimited
 	}
 	return nil
 }

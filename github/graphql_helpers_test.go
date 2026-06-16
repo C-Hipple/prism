@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -540,5 +541,31 @@ func TestDecodeGraphQLResponse_MalformedJSON(t *testing.T) {
 	var result struct{}
 	if err := decodeGraphQLResponse("test", strings.NewReader("{not json"), &result); err == nil {
 		t.Error("expected error decoding malformed JSON")
+	}
+}
+
+func TestDecodeGraphQLResponse_RateLimitReturnsError(t *testing.T) {
+	body := `{"data":{"pr0":null},"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded for installation ID 123."}]}`
+	var result struct {
+		Data map[string]interface{} `json:"data"`
+	}
+	err := decodeGraphQLResponse("test", strings.NewReader(body), &result)
+	if !errors.Is(err, ErrGraphQLRateLimited) {
+		t.Fatalf("expected ErrGraphQLRateLimited, got %v", err)
+	}
+	// data must still be decoded (caller may inspect partial results)
+	if _, ok := result.Data["pr0"]; !ok {
+		t.Error("expected partial data to still decode")
+	}
+}
+
+func TestDecodeGraphQLResponse_BenignErrorNotRateLimit(t *testing.T) {
+	// A FORBIDDEN on a CI field must NOT be treated as rate limiting.
+	body := `{"data":{"pr0":{"x":1}},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible by integration","path":["pr0","object","statusCheckRollup"]}]}`
+	var result struct {
+		Data map[string]interface{} `json:"data"`
+	}
+	if err := decodeGraphQLResponse("test", strings.NewReader(body), &result); err != nil {
+		t.Fatalf("benign partial error should not return an error, got %v", err)
 	}
 }
