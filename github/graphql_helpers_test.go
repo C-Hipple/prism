@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -494,5 +495,50 @@ func TestExecuteGraphQL_Error(t *testing.T) {
 	err := client.executeGraphQL(context.Background(), "query { test }", &result)
 	if err == nil {
 		t.Error("Expected error for 500 response, got nil")
+	}
+}
+
+func TestDecodeGraphQLResponse_PartialErrorStillDecodesData(t *testing.T) {
+	// GitHub returns HTTP 200 with both `data` (partial, null where it failed)
+	// and an `errors` array. The decoder must still populate the data it got.
+	body := `{
+		"data": {"pr0": {"pullRequest": {"number": 29205}}},
+		"errors": [
+			{"type": "FORBIDDEN", "message": "Resource not accessible by integration",
+			 "path": ["pr0", "pullRequest", "timelineItems"]}
+		]
+	}`
+	var result struct {
+		Data map[string]struct {
+			PullRequest struct {
+				Number int `json:"number"`
+			} `json:"pullRequest"`
+		} `json:"data"`
+	}
+	if err := decodeGraphQLResponse("test", strings.NewReader(body), &result); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Data["pr0"].PullRequest.Number != 29205 {
+		t.Errorf("expected data to decode despite partial errors, got %+v", result.Data)
+	}
+}
+
+func TestDecodeGraphQLResponse_NoErrorsField(t *testing.T) {
+	body := `{"data": {"x": 1}}`
+	var result struct {
+		Data map[string]int `json:"data"`
+	}
+	if err := decodeGraphQLResponse("test", strings.NewReader(body), &result); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Data["x"] != 1 {
+		t.Errorf("expected clean decode, got %+v", result.Data)
+	}
+}
+
+func TestDecodeGraphQLResponse_MalformedJSON(t *testing.T) {
+	var result struct{}
+	if err := decodeGraphQLResponse("test", strings.NewReader("{not json"), &result); err == nil {
+		t.Error("expected error decoding malformed JSON")
 	}
 }
