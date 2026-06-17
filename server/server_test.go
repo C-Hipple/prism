@@ -669,3 +669,115 @@ func TestHandleTriggerReview_PRNotFound_Returns404(t *testing.T) {
 
 	assert.Equal(t, http.StatusNotFound, w.Code, "Should return 404 for non-existent PR")
 }
+
+// TestHandleGenerateReview_IngestsMergedPRNotInDB is the core scenario this
+// endpoint exists for: a merged PR the poller never ingested. handleTriggerReview
+// would 404, but generate-review fetches it from GitHub, upserts it, and starts
+// a review.
+func TestHandleGenerateReview_IngestsMergedPRNotInDB(t *testing.T) {
+	headSHA := "merged1234567890abcdef1234567890abcdef1234"
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// A merged (closed) PR — the kind the open-PR poller never records.
+		fmt.Fprintf(w, `{"number":28951,"title":"a culprit PR","state":"closed","merged":true,"draft":false,"user":{"login":"someauthor"},"head":{"sha":"%s"}}`, headSHA)
+	}))
+	defer mockGH.Close()
+
+	ghClient := gh.NewTestClient(mockGH.URL, "testuser")
+	server, database := newTestServerWithGH(t, "testuser", ghClient)
+	defer database.Close()
+
+	// No PR pre-inserted: it must be created from the GitHub fetch alone.
+	body := strings.NewReader(`{"owner":"owner","repo":"repo","number":28951}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prs/generate-review", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleGenerateReview(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	createdPR, err := database.GetPR("owner", "repo", 28951)
+	require.NoError(t, err)
+	require.NotNil(t, createdPR, "PR should have been ingested into the DB from GitHub")
+	assert.Equal(t, headSHA, createdPR.LastCommitSHA, "review should target the PR's HEAD commit")
+	assert.Equal(t, "generating", createdPR.Status)
+	assert.Equal(t, "a culprit PR", createdPR.Title)
+	assert.Equal(t, "someauthor", createdPR.Author)
+	assert.NotNil(t, createdPR.GeneratingSince)
+}
+
+func TestHandleGenerateReview_MethodNotAllowed(t *testing.T) {
+	ghClient := gh.NewTestClient("http://unused.example", "testuser")
+	server, database := newTestServerWithGH(t, "testuser", ghClient)
+	defer database.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prs/generate-review", nil)
+	w := httptest.NewRecorder()
+
+	server.handleGenerateReview(w, req)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+}
+
+func TestHandleGenerateReview_MissingFields_Returns400(t *testing.T) {
+	ghClient := gh.NewTestClient("http://unused.example", "testuser")
+	server, database := newTestServerWithGH(t, "testuser", ghClient)
+	defer database.Close()
+
+	body := strings.NewReader(`{"owner":"owner","repo":"repo","number":0}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prs/generate-review", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleGenerateReview(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleGenerateReview_GitHubError_Returns502(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"message":"boom"}`)
+	}))
+	defer mockGH.Close()
+
+	ghClient := gh.NewTestClient(mockGH.URL, "testuser")
+	server, database := newTestServerWithGH(t, "testuser", ghClient)
+	defer database.Close()
+
+	body := strings.NewReader(`{"owner":"owner","repo":"repo","number":42}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prs/generate-review", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleGenerateReview(w, req)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+
+	// Nothing should have been written to the DB on a GitHub failure.
+	pr, err := database.GetPR("owner", "repo", 42)
+	require.NoError(t, err)
+	assert.Nil(t, pr)
+}
+
+func TestHandleGenerateReview_PRNotFoundOnGitHub_Returns404(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	}))
+	defer mockGH.Close()
+
+	ghClient := gh.NewTestClient(mockGH.URL, "testuser")
+	server, database := newTestServerWithGH(t, "testuser", ghClient)
+	defer database.Close()
+
+	body := strings.NewReader(`{"owner":"owner","repo":"repo","number":999999}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prs/generate-review", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleGenerateReview(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
