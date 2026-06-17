@@ -1545,3 +1545,36 @@ func TestGormDB_GetUserByUsername_PrefersMostRecentlyActiveDuplicate(t *testing.
 	assert.Equal(t, newer.ID, user.ID)
 	assert.Equal(t, int64(222), user.GitHubID)
 }
+
+func TestGormDB_Leadership_AcquireRenewExpireSteal(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	ttl := 60 * time.Millisecond
+
+	// A acquires an unheld lease.
+	ok, err := db.TryAcquireOrRenewLeadership("A", ttl)
+	require.NoError(t, err)
+	assert.True(t, ok, "A should acquire an unheld lease")
+
+	// B cannot steal a valid lease.
+	ok, err = db.TryAcquireOrRenewLeadership("B", ttl)
+	require.NoError(t, err)
+	assert.False(t, ok, "B must not steal A's valid lease")
+
+	// A renews its own lease.
+	ok, err = db.TryAcquireOrRenewLeadership("A", ttl)
+	require.NoError(t, err)
+	assert.True(t, ok, "A should renew its own lease")
+
+	// After expiry, B takes over.
+	time.Sleep(ttl + 80*time.Millisecond)
+	ok, err = db.TryAcquireOrRenewLeadership("B", ttl)
+	require.NoError(t, err)
+	assert.True(t, ok, "B should acquire an expired lease")
+
+	// A can no longer steal B's now-valid lease.
+	ok, err = db.TryAcquireOrRenewLeadership("A", ttl)
+	require.NoError(t, err)
+	assert.False(t, ok, "A must not steal B's valid lease")
+}

@@ -296,6 +296,9 @@ type MockDatabase struct {
 	// Track prune calls for verification
 	BatchPruneViaTeamsCalls [][]db.ViaTeamsPrune
 
+	// Leader election: nil func = always leader.
+	TryAcquireOrRenewLeadershipFunc func(holderID string, ttl time.Duration) (bool, error)
+
 	// Error injection
 	DeletePRError          error
 	UpdatePRStatusError    error
@@ -748,6 +751,14 @@ func (m *MockDatabase) GetUserPRViewsWithViaTeams(prIDs []int) ([]db.UserPRView,
 		views = append(views, *view)
 	}
 	return views, nil
+}
+
+// TryAcquireOrRenewLeadership: nil func = always leader (the default for tests).
+func (m *MockDatabase) TryAcquireOrRenewLeadership(holderID string, ttl time.Duration) (bool, error) {
+	if m.TryAcquireOrRenewLeadershipFunc != nil {
+		return m.TryAcquireOrRenewLeadershipFunc(holderID, ttl)
+	}
+	return true, nil
 }
 
 func (m *MockDatabase) BatchPruneViaTeams(prunes []db.ViaTeamsPrune) error {

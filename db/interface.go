@@ -215,6 +215,11 @@ type Database interface {
 	EnsureUserPRView(userID, prID int, isAuthor bool) error
 	MigrateLegacyNotes(userID int) (int, error)
 
+	// Leader election: only the lease holder runs the automatic poll cycle, so
+	// multiple instances never poll concurrently. Returns true iff holderID holds
+	// the lease after the call.
+	TryAcquireOrRenewLeadership(holderID string, ttl time.Duration) (bool, error)
+
 	// Batch operations (used by poller for efficiency)
 	BatchUpsertPRs(prs []*PR) error
 	BatchUpsertUserPRViews(views []UserPRViewBatchItem) error

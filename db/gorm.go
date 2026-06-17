@@ -81,6 +81,7 @@ func (g *GormDB) AutoMigrate() error {
 		&UserPRViewModel{},
 		&SettingModel{},
 		&TelemetryEventModel{},
+		&PollerLeaseModel{},
 	); err != nil {
 		return err
 	}
