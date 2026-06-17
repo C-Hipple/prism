@@ -1,11 +1,12 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, createEvent, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PR } from '@/types/pr';
 import { PRTableRow } from './PRTableRow';
 
-const { triggerMutate, deleteMutate } = vi.hoisted(() => ({
+const { triggerMutate, deleteMutate, trackMock } = vi.hoisted(() => ({
   triggerMutate: vi.fn(),
   deleteMutate: vi.fn(),
+  trackMock: vi.fn(),
 }));
 
 vi.mock('@/hooks/usePRs', () => ({
@@ -13,7 +14,7 @@ vi.mock('@/hooks/usePRs', () => ({
   useTriggerReview: () => ({ mutate: triggerMutate, isPending: false }),
 }));
 vi.mock('@/hooks/useTelemetry', () => ({
-  useTelemetry: () => ({ track: vi.fn() }),
+  useTelemetry: () => ({ track: trackMock }),
 }));
 vi.mock('@/components/common', () => ({
   CommitSha: () => <span>sha</span>,
@@ -139,5 +140,74 @@ describe('PRTableRow review cell', () => {
   it('falls back to Generate when status is completed but no review_url is present', () => {
     renderRow(makePR({ status: 'completed', review_url: '' }));
     expect(screen.getByRole('button', { name: /generate/i })).toBeTruthy();
+  });
+});
+
+describe('PRTableRow PR link click behavior', () => {
+  const PR_URL = 'https://github.com/test-org/test-repo/pull/1';
+  const originalLocation = window.location;
+  let assignSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    assignSpy = vi.fn();
+    // jsdom's window.location.assign is non-configurable, so replace the whole
+    // location object for the duration of these tests.
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { href: originalLocation.href, origin: originalLocation.origin, assign: assignSpy },
+    });
+  });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+  });
+
+  const getLink = () => screen.getByRole('link', { name: /test-org\/test-repo #1/ });
+
+  it('keeps the new-tab default: link still targets _blank with noopener', () => {
+    renderRow(makePR());
+    const link = getLink();
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel') ?? '').toContain('noopener');
+    expect(link.getAttribute('href')).toBe(PR_URL);
+  });
+
+  it('on a plain click, does not intercept — lets the browser open a new tab', () => {
+    renderRow(makePR());
+    const ev = createEvent.click(getLink());
+    fireEvent(getLink(), ev);
+    expect(ev.defaultPrevented).toBe(false);
+    expect(assignSpy).not.toHaveBeenCalled();
+  });
+
+  it('on Alt/Option+click, opens the PR in the SAME tab', () => {
+    renderRow(makePR());
+    const ev = createEvent.click(getLink(), { altKey: true });
+    fireEvent(getLink(), ev);
+    expect(ev.defaultPrevented).toBe(true);
+    expect(assignSpy).toHaveBeenCalledTimes(1);
+    expect(assignSpy).toHaveBeenCalledWith(PR_URL);
+  });
+
+  it('only Alt is intercepted — Ctrl/Cmd/Shift+click stay new-tab', () => {
+    renderRow(makePR());
+    const link = getLink();
+    for (const mods of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) {
+      const ev = createEvent.click(link, mods);
+      fireEvent(link, ev);
+      expect(ev.defaultPrevented).toBe(false);
+    }
+    expect(assignSpy).not.toHaveBeenCalled();
+  });
+
+  it('fires open_pr_github telemetry on both plain and Alt+click', () => {
+    renderRow(makePR());
+    fireEvent.click(getLink());
+    fireEvent.click(getLink(), { altKey: true });
+    const opens = trackMock.mock.calls.filter((c) => c[0] === 'open_pr_github');
+    expect(opens).toHaveLength(2);
+    expect(opens[0][1]).toMatchObject({ pr_owner: 'test-org', pr_repo: 'test-repo', pr_number: 1 });
   });
 });
