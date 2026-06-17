@@ -2,6 +2,8 @@ package poller
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"pr-review-server/config"
@@ -101,6 +104,90 @@ type Poller struct {
 	// Buffered to AgentMaxConcurrent; nil if AgentMaxConcurrent <= 0
 	// (unlimited, used by tests).
 	agentSlots chan struct{}
+	// Leader election: only the instance holding the DB lease runs the automatic
+	// poll cycle, so multiple instances (e.g. a deploy overlap) never poll
+	// concurrently. holderID is unique per instance; isLeaderFlag is kept fresh
+	// by runLeaderElection and read by the poll loop. Empty holderID disables
+	// election (single-process tests that call poll() directly are unaffected,
+	// since election only gates Start()'s loop).
+	holderID     string
+	isLeaderFlag atomic.Bool
+}
+
+// Leader-election lease timing. The lease must outlive a poll cycle by a
+// comfortable margin (a leader mid-poll must not lose the lease), and renewal
+// must beat expiry several times over so a single missed renew doesn't trigger
+// a spurious failover.
+const (
+	leaderLeaseTTL      = 90 * time.Second
+	leaderRenewInterval = 30 * time.Second
+)
+
+// newHolderID returns a per-instance leader-election identity: the Cloud Run
+// revision (shared by a revision's instances) plus random bytes (unique per
+// instance), so two instances of the same revision still contend correctly.
+func newHolderID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		// rand failure is effectively impossible; fall back to a time-based id.
+		return fmt.Sprintf("%s-%d", revisionName(), time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%s-%s", revisionName(), hex.EncodeToString(buf))
+}
+
+func revisionName() string {
+	if rev := os.Getenv("K_REVISION"); rev != "" {
+		return rev
+	}
+	return "local"
+}
+
+// isLeader reports whether this instance currently holds the poller lease.
+// When election is disabled (empty holderID, e.g. direct unit-test calls), it
+// reports true so callers behave as a lone poller.
+func (p *Poller) isLeader() bool {
+	if p.holderID == "" {
+		return true
+	}
+	return p.isLeaderFlag.Load()
+}
+
+// updateLeadership renews/acquires the lease once and records the result.
+// On a lease-query error it fails OPEN (assume leadership) so a transient DB
+// hiccup degrades to the old always-poll behavior rather than halting polling
+// across the whole fleet.
+func (p *Poller) updateLeadership(ctx context.Context) bool {
+	if p.holderID == "" {
+		return true
+	}
+	leader, err := p.db.TryAcquireOrRenewLeadership(p.holderID, leaderLeaseTTL)
+	if err != nil {
+		log.Printf("[LEADER] lease query failed, assuming leadership to avoid stalling polls: %v", err)
+		leader = true
+	}
+	if prev := p.isLeaderFlag.Swap(leader); prev != leader {
+		if leader {
+			log.Printf("[LEADER] acquired poller leadership (holder=%s)", p.holderID)
+		} else {
+			log.Printf("[LEADER] lost poller leadership (holder=%s); another instance is polling", p.holderID)
+		}
+	}
+	return leader
+}
+
+// runLeaderElection renews the lease on a steady cadence independent of the
+// poll cycle, so lease validity never depends on how long a poll takes.
+func (p *Poller) runLeaderElection(ctx context.Context) {
+	ticker := time.NewTicker(leaderRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.updateLeadership(ctx)
+		}
+	}
 }
 
 func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsClient *gcs.Client) *Poller {
@@ -114,6 +201,7 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		triggerChan:      make(chan struct{}, 1), // Buffered to prevent blocking
 		activeReviews:    make(map[string]ProcessInfo),
 		agentSpawner:     service.DefaultSpawner{},
+		holderID:         newHolderID(),
 	}
 	if cfg.AgentMaxConcurrent > 0 {
 		p.agentSlots = make(chan struct{}, cfg.AgentMaxConcurrent)
@@ -283,9 +371,21 @@ func (p *Poller) Start(ctx context.Context) {
 
 	log.Println("Starting poller...")
 	log.Printf("Ticker created at %s, will fire every %v", tickerStartTime.Format("15:04:05.000"), p.cfg.PollingInterval)
+	if p.holderID != "" {
+		log.Printf("[LEADER] poller leadership enabled (holder=%s, lease=%v, renew=%v)", p.holderID, leaderLeaseTTL, leaderRenewInterval)
+	}
 
-	// Run immediately on start
-	p.startPoll(ctx, "initial")
+	// Acquire/renew leadership once synchronously so the initial poll reflects it,
+	// then keep the lease fresh in the background.
+	p.updateLeadership(ctx)
+	go p.runLeaderElection(ctx)
+
+	// Run immediately on start (leader only).
+	if p.isLeader() {
+		p.startPoll(ctx, "initial")
+	} else {
+		log.Printf("[LEADER] not leader at startup, skipping initial poll")
+	}
 
 	for {
 		select {
@@ -295,7 +395,14 @@ func (p *Poller) Start(ctx context.Context) {
 		case tickTime := <-ticker.C:
 			elapsed := tickTime.Sub(tickerStartTime)
 			log.Printf("Ticker fired at %s (%.3fs since ticker start)", tickTime.Format("15:04:05.000"), elapsed.Seconds())
-			p.startPoll(ctx, "scheduled")
+			// Only the lease holder runs the automatic cycle, so concurrent
+			// instances never poll (and prune) at the same time. Manual triggers
+			// below are deliberately exempt — they're explicit user actions.
+			if p.isLeader() {
+				p.startPoll(ctx, "scheduled")
+			} else {
+				log.Printf("[LEADER] not leader, skipping scheduled poll")
+			}
 		case <-p.triggerChan:
 			p.startPoll(ctx, "manual")
 		}
