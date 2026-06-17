@@ -258,6 +258,7 @@ func (s *Server) Start() error {
 	http.Handle("/api/prs/delete", withAuth(s.handleDeletePR))
 	http.Handle("/api/prs/notes", withAuth(s.handleUpdatePRNotes))
 	http.Handle("/api/prs/trigger-review", withAuth(s.handleTriggerReview))
+	http.Handle("/api/prs/generate-review", withAuth(s.handleGenerateReview))
 	http.Handle("/api/poll/trigger", withAuth(s.handleTriggerPoll))
 	http.Handle("/api/status", withAuth(s.handleStatus))
 	http.Handle("/api/reviewer-health", withAuth(s.handleReviewerHealth))
@@ -599,6 +600,124 @@ func (s *Server) handleTriggerReview(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "success"}) // nolint:errcheck
+}
+
+// handleGenerateReview generates a review for an arbitrary PR on demand,
+// fetching it straight from GitHub instead of relying on the poller having
+// already discovered it.
+//
+// The poller only ingests *open* PRs in the watched org, so merged/closed PRs
+// never enter the database and handleTriggerReview returns 404 for them. This
+// endpoint closes that gap: it looks the PR up via the GitHub API (which works
+// regardless of open/merged/closed state), upserts it into the database, and
+// kicks off an immediate review against its HEAD commit. It is deliberately
+// independent of the poll cycle.
+//
+// Path:    /api/prs/generate-review
+// Method:  POST
+// Body:    {"owner": "...", "repo": "...", "number": N}
+func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Owner  string `json:"owner"`
+		Repo   string `json:"repo"`
+		Number int    `json:"number"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("[API] generate-review: bad request body: %v", err)
+		http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	if req.Owner == "" || req.Repo == "" || req.Number <= 0 {
+		log.Printf("[API] generate-review: missing/invalid fields owner=%q repo=%q number=%d", req.Owner, req.Repo, req.Number)
+		http.Error(w, "owner, repo, and a positive number are required", http.StatusBadRequest)
+		return
+	}
+	log.Printf("[API] generate-review: received for %s/%s#%d", req.Owner, req.Repo, req.Number)
+
+	// Short-circuit if a review is already in flight for this PR (same dedup
+	// rationale as handleTriggerReview: avoid parallel clones + token burn).
+	if s.poller != nil && s.poller.IsReviewTracked(req.Owner, req.Repo, req.Number) {
+		log.Printf("[API] generate-review: PR %s/%s#%d already in flight, returning 409", req.Owner, req.Repo, req.Number)
+		http.Error(w, "Review already in progress for this PR", http.StatusConflict)
+		return
+	}
+
+	// Fetch the PR directly from GitHub. Unlike handleTriggerReview, we do NOT
+	// require the PR to already exist in the database — that is the whole point
+	// of this endpoint. PullRequests.Get succeeds for merged/closed PRs too.
+	ghPR, resp, err := s.ghClient.GetPR(r.Context(), req.Owner, req.Repo, req.Number)
+	if err != nil {
+		status := http.StatusBadGateway
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			status = http.StatusNotFound
+		}
+		log.Printf("[API] generate-review: GetPR failed for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
+		http.Error(w, fmt.Sprintf("Failed to fetch PR from GitHub: %v", err), status)
+		return
+	}
+	if ghPR == nil {
+		log.Printf("[API] generate-review: PR %s/%s#%d not found on GitHub", req.Owner, req.Repo, req.Number)
+		http.Error(w, "PR not found on GitHub", http.StatusNotFound)
+		return
+	}
+
+	headSHA := ghPR.GetHead().GetSHA()
+	if headSHA == "" {
+		log.Printf("[API] generate-review: PR %s/%s#%d has no HEAD SHA", req.Owner, req.Repo, req.Number)
+		http.Error(w, "PR has no HEAD commit SHA", http.StatusInternalServerError)
+		return
+	}
+	title := ghPR.GetTitle()
+	author := ghPR.GetUser().GetLogin()
+	draft := ghPR.GetDraft()
+	createdAt := ghPR.GetCreatedAt().Time
+	// Guard the zero value: an anomalous GitHub response without created_at would
+	// otherwise persist 0001-01-01, which sorts as a real (ancient) date under the
+	// dashboard's "created_at DESC NULLS LAST" ordering instead of as NULL.
+	var createdAtPtr *time.Time
+	if !createdAt.IsZero() {
+		createdAtPtr = &createdAt
+	}
+
+	// Upsert the PR as generating. SetPRGenerating's OnConflict makes this an
+	// insert when the PR is new to us (the merged-PR case) and an update when
+	// it already exists.
+	if err := s.db.SetPRGenerating(req.Owner, req.Repo, req.Number, headSHA, title, author, createdAtPtr, draft); err != nil {
+		log.Printf("[API] generate-review: SetPRGenerating failed for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
+		http.Error(w, fmt.Sprintf("Failed to update PR status: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[API] generate-review: ingested + triggered %s/%s#%d (commit: %s, state: %s, merged: %t)",
+		req.Owner, req.Repo, req.Number, headSHA[:7], ghPR.GetState(), ghPR.GetMerged())
+
+	// Notify all clients so the dashboard reflects the new PR/status.
+	s.BroadcastEvent(EventPRUpdated, map[string]interface{}{
+		"owner":  req.Owner,
+		"repo":   req.Repo,
+		"number": req.Number,
+	})
+	s.BroadcastStatusSnapshot(r.Context())
+
+	// Start the review immediately, bypassing the poll cycle entirely.
+	// force=true so the per-commit cache never short-circuits an explicit
+	// on-demand request. Background context: the review outlives this request.
+	if s.poller != nil {
+		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, headSHA, title, author, createdAtPtr, draft, true)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{ // nolint:errcheck
+		"status": "success",
+		"commit": headSHA,
+		"state":  ghPR.GetState(),
+		"merged": ghPR.GetMerged(),
+	})
 }
 
 func (s *Server) handleTriggerPoll(w http.ResponseWriter, r *http.Request) {
