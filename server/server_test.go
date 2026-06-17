@@ -705,6 +705,12 @@ func TestHandleGenerateReview_IngestsMergedPRNotInDB(t *testing.T) {
 	assert.Equal(t, "a culprit PR", createdPR.Title)
 	assert.Equal(t, "someauthor", createdPR.Author)
 	assert.NotNil(t, createdPR.GeneratingSince)
+	// The mock PR payload has no created_at. The zero-time guard must keep us
+	// from persisting 0001-01-01 (which sorts as a real ancient date under the
+	// dashboard's "created_at DESC NULLS LAST" ordering); the nil falls through
+	// to GORM's autoCreateTime, yielding a sane recent timestamp instead.
+	require.NotNil(t, createdPR.CreatedAt)
+	assert.Greater(t, createdPR.CreatedAt.Year(), 2000, "missing created_at must not persist as the ancient zero time")
 }
 
 func TestHandleGenerateReview_MethodNotAllowed(t *testing.T) {

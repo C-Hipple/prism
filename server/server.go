@@ -676,7 +676,13 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 	author := ghPR.GetUser().GetLogin()
 	draft := ghPR.GetDraft()
 	createdAt := ghPR.GetCreatedAt().Time
-	createdAtPtr := &createdAt
+	// Guard the zero value: an anomalous GitHub response without created_at would
+	// otherwise persist 0001-01-01, which sorts as a real (ancient) date under the
+	// dashboard's "created_at DESC NULLS LAST" ordering instead of as NULL.
+	var createdAtPtr *time.Time
+	if !createdAt.IsZero() {
+		createdAtPtr = &createdAt
+	}
 
 	// Upsert the PR as generating. SetPRGenerating's OnConflict makes this an
 	// insert when the PR is new to us (the merged-PR case) and an update when
