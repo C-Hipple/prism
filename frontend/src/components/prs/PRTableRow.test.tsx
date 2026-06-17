@@ -202,6 +202,21 @@ describe('PRTableRow PR link click behavior', () => {
     expect(assignSpy).not.toHaveBeenCalled();
   });
 
+  it('does not intercept Alt combined with another modifier (e.g. Cmd+Alt, Ctrl+Alt)', () => {
+    renderRow(makePR());
+    const link = getLink();
+    for (const mods of [
+      { altKey: true, metaKey: true },
+      { altKey: true, ctrlKey: true },
+      { altKey: true, shiftKey: true },
+    ]) {
+      const ev = createEvent.click(link, mods);
+      fireEvent(link, ev);
+      expect(ev.defaultPrevented).toBe(false);
+    }
+    expect(assignSpy).not.toHaveBeenCalled();
+  });
+
   it('fires open_pr_github telemetry on both plain and Alt+click', () => {
     renderRow(makePR());
     fireEvent.click(getLink());
