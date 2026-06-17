@@ -1,6 +1,6 @@
 ---
 name: prism-review
-description: Fetch a PRism AI review for a GitHub PR, investigate the cited code, and report your own assessment with suggested next steps. Default behavior is read-only review and recommendation, NOT applying fixes. Use when the user says things like "read the PRism review for PR X", "fetch the prism review for owner/repo#N", or any variation referring to a "PRism" or "prism" AI review. The skill calls the prism server's `/api/review/{owner}/{repo}/{pr}` endpoint, prints the review HTML, and then you read the cited files and write up what you found. Only apply changes if the user explicitly asks (e.g. "apply the fixes", "handle the suggestions").
+description: Fetch a PRism AI review for a GitHub PR, investigate the cited code, and report your own assessment with suggested next steps. Default behavior is read-only review and recommendation, NOT applying fixes. Use when the user says things like "read the PRism review for PR X", "fetch the prism review for owner/repo#N", or any variation referring to a "PRism" or "prism" AI review. The skill calls the prism server's `/api/review/{owner}/{repo}/{pr}` endpoint, prints the review findings, and then you read the cited files and write up what you found. It can also trigger a fresh review on demand (including for merged/closed PRs) via the `generate-review` endpoint. Only apply changes if the user explicitly asks (e.g. "apply the fixes", "handle the suggestions").
 ---
 
 # prism-review
@@ -37,6 +37,59 @@ The `DIFF HUNK` and `SOURCE CONTEXT` together tell you exactly what the
 comment refers to without having to re-read the file from scratch — though
 you should still open the file to see callers / tests / wider context
 before forming a judgment.
+
+## Triggering a review on demand (including merged / closed PRs)
+
+`fetch.sh` only *reads* a review that already exists. The prism poller
+auto-reviews **open** PRs, so a PR the poller never saw while it was open —
+most importantly a **merged or closed** PR — isn't in the database, and
+`fetch.sh` returns 404 for it.
+
+To force a fresh review for any PR regardless of state, POST to the
+`generate-review` endpoint:
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer $(gh auth token)" \
+  -H "Content-Type: application/json" \
+  --data '{"owner":"acme","repo":"example","number":42}' \
+  "${PRISM_BASE_URL}/api/prs/generate-review"
+```
+
+It fetches the PR straight from GitHub (open/merged/closed all work),
+ingests it, and starts a review against the PR's HEAD commit — independent
+of the poll cycle. The JSON response carries deterministic, DB-independent
+result URLs:
+
+```jsonc
+{
+  "status": "success",
+  "commit": "<head-sha>",
+  "review_url":   "/reviews/acme_example_42_<sha7>.html",  // rendered HTML review
+  "findings_url": "/reviews/acme_example_42_<sha7>.json",  // structured findings (same shape fetch.sh parses)
+  "state": "closed", "merged": true
+}
+```
+
+Poll `findings_url` (prefixed with `${PRISM_BASE_URL}`) until it returns
+200 — it's 404 while the review generates, 200 once it lands (agent reviews
+take a few minutes):
+
+```bash
+curl -sS -H "Authorization: Bearer $(gh auth token)" \
+  "${PRISM_BASE_URL}/reviews/acme_example_42_<sha7>.json"
+```
+
+These `/reviews/...` objects are served straight from storage with no
+database lookup, so they survive the closed-PR cleanup that removes merged
+PRs from the DB. For merged/closed PRs, **retrieve results via
+`findings_url`, not `fetch.sh`** — `fetch.sh` is keyed on the PR still being
+in the database and will 404 once cleanup runs. Evaluate the sidecar's
+`findings[]` exactly as you would `fetch.sh` output.
+
+> If your prism deployment predates the `review_url` / `findings_url`
+> response fields, construct the path yourself from `commit`:
+> `${PRISM_BASE_URL}/reviews/{owner}_{repo}_{number}_{first7ofCommit}.json`.
 
 ## What to do with the review
 
@@ -110,4 +163,5 @@ between review generations.
 - Exit 4: server returned non-200. Body is printed to stderr; common cases:
   - 401 — token rejected by prism server (your GitHub login isn't registered).
   - 404 — PR not in prism's database, or no review has been generated yet.
-    Tell the user to trigger a review from the prism dashboard first.
+    Trigger one yourself with the `generate-review` endpoint (see
+    "Triggering a review on demand") — it works even for merged/closed PRs.

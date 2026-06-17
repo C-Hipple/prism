@@ -697,6 +697,19 @@ func TestHandleGenerateReview_IngestsMergedPRNotInDB(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 
+	// The response must hand back the deterministic, DB-independent URLs the
+	// review will be saved to, so the caller can poll for the result even after
+	// the closed-PR cleanup prunes the row.
+	var resp struct {
+		Commit      string `json:"commit"`
+		ReviewURL   string `json:"review_url"`
+		FindingsURL string `json:"findings_url"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, headSHA, resp.Commit)
+	assert.Equal(t, "/reviews/owner_repo_28951_"+headSHA[:7]+".html", resp.ReviewURL)
+	assert.Equal(t, "/reviews/owner_repo_28951_"+headSHA[:7]+".json", resp.FindingsURL)
+
 	createdPR, err := database.GetPR("owner", "repo", 28951)
 	require.NoError(t, err)
 	require.NotNil(t, createdPR, "PR should have been ingested into the DB from GitHub")
