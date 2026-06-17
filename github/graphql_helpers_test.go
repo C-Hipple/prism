@@ -569,3 +569,21 @@ func TestDecodeGraphQLResponse_BenignErrorNotRateLimit(t *testing.T) {
 		t.Fatalf("benign partial error should not return an error, got %v", err)
 	}
 }
+
+// Reorder guard: a rate-limited response whose body also fails to decode into
+// the result must still surface as ErrGraphQLRateLimited (the actionable signal),
+// not a generic decode error.
+func TestDecodeGraphQLResponse_RateLimitWinsOverDecodeError(t *testing.T) {
+	body := `{"data":{"pr0":{"pullRequest":{"number":"not-an-int"}}},"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded"}]}`
+	var result struct {
+		Data map[string]struct {
+			PullRequest struct {
+				Number int `json:"number"`
+			} `json:"pullRequest"`
+		} `json:"data"`
+	}
+	err := decodeGraphQLResponse("test", strings.NewReader(body), &result)
+	if !errors.Is(err, ErrGraphQLRateLimited) {
+		t.Fatalf("expected ErrGraphQLRateLimited to win over decode error, got %v", err)
+	}
+}

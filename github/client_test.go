@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -314,5 +315,44 @@ func TestBatchGetReviewerGroups_ChunksLargeBatch(t *testing.T) {
 	}
 	if maxAliasesPerRequest > reviewerGroupsChunkSize {
 		t.Errorf("a request carried %d PRs, exceeding chunk size %d", maxAliasesPerRequest, reviewerGroupsChunkSize)
+	}
+}
+
+// A transient per-repo failure (non-rate-limit) must make BatchGetReviewerGroups
+// return an error so the poller skips the reviewer-groups phase (incl. the prune)
+// rather than acting on a partial result map.
+func TestBatchGetReviewerGroups_PartialFetchFailureReturnsError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer ts.Close()
+
+	client := NewClient("dummy-token", "test-user")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	_, err := client.BatchGetReviewerGroups(context.Background(), []PullRequest{
+		{Owner: "owner", Repo: "repo", Number: 1},
+	})
+	if err == nil {
+		t.Fatal("expected an error when a repo fetch fails, got nil")
+	}
+}
+
+// A rate-limited response must surface as ErrGraphQLRateLimited specifically.
+func TestBatchGetReviewerGroups_RateLimitReturnsTypedError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded"}]}`))
+	}))
+	defer ts.Close()
+
+	client := NewClient("dummy-token", "test-user")
+	client.httpClient = &http.Client{Transport: &redirectTransport{targetURL: ts.URL}}
+
+	_, err := client.BatchGetReviewerGroups(context.Background(), []PullRequest{
+		{Owner: "owner", Repo: "repo", Number: 1},
+	})
+	if !errors.Is(err, ErrGraphQLRateLimited) {
+		t.Fatalf("expected ErrGraphQLRateLimited, got %v", err)
 	}
 }

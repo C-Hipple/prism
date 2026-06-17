@@ -55,14 +55,17 @@ func decodeGraphQLResponse(label string, body io.Reader, result interface{}) err
 		}
 	}
 
-	if err := json.Unmarshal(raw, result); err != nil {
-		return fmt.Errorf("failed to decode GraphQL response: %w", err)
-	}
-	// Surface rate limiting AFTER decoding so callers that want partial data can
-	// still read it, but the default path (return on error) discards throttled
-	// data rather than acting on it.
+	errDecode := json.Unmarshal(raw, result)
+	// Surface rate limiting BEFORE any decode error: a throttled response can
+	// come back with null fields that fail to unmarshal, and the rate-limit
+	// signal is the one callers must act on (skip pruning) rather than a generic
+	// decode failure. Decoding still ran first, so callers that want partial data
+	// can read whatever populated.
 	if rateLimited {
 		return ErrGraphQLRateLimited
+	}
+	if errDecode != nil {
+		return fmt.Errorf("failed to decode GraphQL response: %w", errDecode)
 	}
 	return nil
 }

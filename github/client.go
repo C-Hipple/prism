@@ -761,8 +761,9 @@ func (c *Client) BatchGetReviewerGroups(ctx context.Context, prs []PullRequest) 
 		mu          sync.Mutex
 		results     = make(map[string]*ReviewerGroupData)
 		wg          sync.WaitGroup
-		sem         = make(chan struct{}, 5) // limit to 10 concurrent GitHub API calls
+		sem         = make(chan struct{}, 5) // limit to 5 concurrent GitHub API calls
 		rateLimited bool
+		fetchFailed bool
 	)
 
 	for repoKey, repoPRs := range prsByRepo {
@@ -777,11 +778,12 @@ func (c *Client) BatchGetReviewerGroups(ctx context.Context, prs []PullRequest) 
 			repoData, err := c.fetchReviewerGroupsForRepo(ctx, rps)
 			if err != nil {
 				log.Printf("[GRAPHQL] Error fetching reviewer groups for %s: %v", rk, err)
+				mu.Lock()
+				fetchFailed = true
 				if errors.Is(err, ErrGraphQLRateLimited) {
-					mu.Lock()
 					rateLimited = true
-					mu.Unlock()
 				}
+				mu.Unlock()
 				return
 			}
 
@@ -795,12 +797,18 @@ func (c *Client) BatchGetReviewerGroups(ctx context.Context, prs []PullRequest) 
 	wg.Wait()
 
 	log.Printf("[GRAPHQL] Successfully fetched reviewer groups for %d/%d PRs", len(results), len(prs))
-	// If any repo was throttled, the result set is incomplete and untrustworthy.
-	// Returning an error makes the poller skip the reviewer-groups phase entirely
-	// this cycle — crucially including the via_teams prune — so throttled-empty
-	// data never causes legitimate rows to be cleared/hidden.
+	// ANY incomplete fetch (rate-limit OR a transient per-repo error like a 502,
+	// timeout, or decode failure) leaves the result set partial: PRs from the
+	// failed repo are absent from the map, which the poller would otherwise treat
+	// as authoritative and prune their via_teams on. Returning an error makes the
+	// poller skip the whole reviewer-groups phase this cycle — including the
+	// prune — so incomplete data never clears/hides legitimate rows. Rate limiting
+	// keeps its specific error type for callers that distinguish it.
 	if rateLimited {
 		return results, ErrGraphQLRateLimited
+	}
+	if fetchFailed {
+		return results, errors.New("github: reviewer-groups fetch incomplete (one or more repos failed)")
 	}
 	return results, nil
 }
