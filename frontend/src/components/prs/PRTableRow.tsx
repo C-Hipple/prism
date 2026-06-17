@@ -1,4 +1,4 @@
-import { memo, useCallback } from 'react';
+import { memo, useCallback, type MouseEvent } from 'react';
 import type { PR } from '@/types/pr';
 import { CommitSha } from '@/components/common';
 import { useDeletePR, useTriggerReview } from '@/hooks/usePRs';
@@ -44,10 +44,22 @@ export const PRTableRow = memo(function PRTableRow({
     });
   }, [pr.owner, pr.repo, pr.number, triggerReviewMutation, track]);
 
+  const handleOpenPr = useCallback((e: MouseEvent<HTMLAnchorElement>) => {
+    track('open_pr_github', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number });
+    // Opt-in same-tab: Alt/Option+click (and only Alt) navigates the current
+    // tab instead of opening a new one. Plain click, Ctrl/Cmd/Shift/middle-click,
+    // and any Alt+other-modifier combo keep the browser's default new-tab
+    // behavior via target="_blank".
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      e.preventDefault();
+      window.location.assign(prUrl);
+    }
+  }, [pr.owner, pr.repo, pr.number, prUrl, track]);
+
   return (
     <tr>
       <td>
-        <a href={prUrl} target="_blank" rel="noopener noreferrer" onClick={() => track('open_pr_github', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number })}>
+        <a href={prUrl} target="_blank" rel="noopener noreferrer" title="Alt/Option-click to open in this tab" onClick={handleOpenPr}>
           {pr.owner}/{pr.repo} #{pr.number}
         </a>
         {pr.draft && <span className="pr-table__draft-indicator"> (Draft)</span>}

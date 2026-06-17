@@ -4,12 +4,71 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strings"
 )
 
 const graphQLEndpoint = "https://api.github.com/graphql"
+
+// ErrGraphQLRateLimited is returned when a GraphQL response carries a
+// rate-limit error. GitHub still returns HTTP 200 with whatever partial data
+// it managed, but that data is unreliable (aliases come back null), so callers
+// must NOT treat it as authoritative — in particular the poller must not prune
+// via_teams off rows that merely appear unentitled because the fetch was
+// throttled. Distinct error type so callers can tell throttling apart from a
+// genuine failure or a genuinely-empty result.
+var ErrGraphQLRateLimited = errors.New("github: GraphQL rate limit exceeded")
+
+// decodeGraphQLResponse decodes a GraphQL HTTP response body into result, after
+// surfacing any GraphQL-level errors. GitHub returns HTTP 200 even for PARTIAL
+// failures: the affected fields come back null while an `errors` array explains
+// why (e.g. a field the token can't read). Without logging these, a partial
+// failure is indistinguishable from a legitimately-empty result — which is how
+// reviewer-group detection silently returned [] for some PRs. The label
+// identifies the calling query; the error `path` pinpoints the alias (e.g.
+// pr5 -> pullRequest -> timelineItems) so the failing PR can be cross-referenced.
+func decodeGraphQLResponse(label string, body io.Reader, result interface{}) error {
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return fmt.Errorf("failed to read GraphQL response: %w", err)
+	}
+
+	var envelope struct {
+		Errors []struct {
+			Type    string        `json:"type"`
+			Message string        `json:"message"`
+			Path    []interface{} `json:"path"`
+		} `json:"errors"`
+	}
+	rateLimited := false
+	if json.Unmarshal(raw, &envelope) == nil {
+		for _, e := range envelope.Errors {
+			log.Printf("[GRAPHQL] %s partial error: type=%s path=%v message=%s",
+				label, e.Type, e.Path, e.Message)
+			if e.Type == "RATE_LIMITED" || strings.Contains(strings.ToLower(e.Message), "rate limit") {
+				rateLimited = true
+			}
+		}
+	}
+
+	errDecode := json.Unmarshal(raw, result)
+	// Surface rate limiting BEFORE any decode error: a throttled response can
+	// come back with null fields that fail to unmarshal, and the rate-limit
+	// signal is the one callers must act on (skip pruning) rather than a generic
+	// decode failure. Decoding still ran first, so callers that want partial data
+	// can read whatever populated.
+	if rateLimited {
+		return ErrGraphQLRateLimited
+	}
+	if errDecode != nil {
+		return fmt.Errorf("failed to decode GraphQL response: %w", errDecode)
+	}
+	return nil
+}
 
 // executeGraphQL executes a GraphQL query and decodes the response into the provided result struct.
 // This consolidates the common GraphQL execution boilerplate used across multiple functions.
@@ -46,11 +105,7 @@ func (c *Client) executeGraphQL(ctx context.Context, query string, result interf
 		return fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-		return fmt.Errorf("failed to decode GraphQL response: %w", err)
-	}
-
-	return nil
+	return decodeGraphQLResponse("client", resp.Body, result)
 }
 
 // executeGraphQL on AppClient executes a GraphQL query using the App installation token.
@@ -84,11 +139,7 @@ func (c *AppClient) executeGraphQL(ctx context.Context, query string, result int
 		return fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-		return fmt.Errorf("failed to decode GraphQL response: %w", err)
-	}
-
-	return nil
+	return decodeGraphQLResponse("appclient", resp.Body, result)
 }
 
 // buildPRAliasMap creates a mapping from PR aliases (pr0, pr1, etc.) to PR numbers.

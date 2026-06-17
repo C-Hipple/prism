@@ -3,6 +3,7 @@ package github
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -757,10 +758,12 @@ func (c *Client) BatchGetReviewerGroups(ctx context.Context, prs []PullRequest) 
 	}
 
 	var (
-		mu      sync.Mutex
-		results = make(map[string]*ReviewerGroupData)
-		wg      sync.WaitGroup
-		sem     = make(chan struct{}, 5) // limit to 10 concurrent GitHub API calls
+		mu          sync.Mutex
+		results     = make(map[string]*ReviewerGroupData)
+		wg          sync.WaitGroup
+		sem         = make(chan struct{}, 5) // limit to 5 concurrent GitHub API calls
+		rateLimited bool
+		fetchFailed bool
 	)
 
 	for repoKey, repoPRs := range prsByRepo {
@@ -775,6 +778,12 @@ func (c *Client) BatchGetReviewerGroups(ctx context.Context, prs []PullRequest) 
 			repoData, err := c.fetchReviewerGroupsForRepo(ctx, rps)
 			if err != nil {
 				log.Printf("[GRAPHQL] Error fetching reviewer groups for %s: %v", rk, err)
+				mu.Lock()
+				fetchFailed = true
+				if errors.Is(err, ErrGraphQLRateLimited) {
+					rateLimited = true
+				}
+				mu.Unlock()
 				return
 			}
 
@@ -788,11 +797,56 @@ func (c *Client) BatchGetReviewerGroups(ctx context.Context, prs []PullRequest) 
 	wg.Wait()
 
 	log.Printf("[GRAPHQL] Successfully fetched reviewer groups for %d/%d PRs", len(results), len(prs))
+	// ANY incomplete fetch (rate-limit OR a transient per-repo error like a 502,
+	// timeout, or decode failure) leaves the result set partial: PRs from the
+	// failed repo are absent from the map, which the poller would otherwise treat
+	// as authoritative and prune their via_teams on. Returning an error makes the
+	// poller skip the whole reviewer-groups phase this cycle — including the
+	// prune — so incomplete data never clears/hides legitimate rows. Rate limiting
+	// keeps its specific error type for callers that distinguish it.
+	if rateLimited {
+		return results, ErrGraphQLRateLimited
+	}
+	if fetchFailed {
+		return results, errors.New("github: reviewer-groups fetch incomplete (one or more repos failed)")
+	}
 	return results, nil
 }
 
-// fetchReviewerGroupsForRepo fetches reviewer groups for all PRs in a single repository using GraphQL
+// reviewerGroupsChunkSize bounds how many PRs go into a single batched GraphQL
+// query. GitHub silently truncates oversized batched queries: connections past
+// an internal cost threshold return empty `nodes` with NO entry in the response
+// `errors` array. A large repo's PRs that landed late in one giant query lost
+// their reviewer teams, so the PRs vanished from team members' dashboards.
+// Chunking keeps each query small enough to fully resolve. Verified: the same
+// PRs that returned empty at position ~140+ in one query return their teams
+// when queried in a chunk of this size.
+const reviewerGroupsChunkSize = 25
+
+// fetchReviewerGroupsForRepo fetches reviewer groups for all PRs in a single
+// repository, splitting them into bounded chunks (see reviewerGroupsChunkSize)
+// so no single GraphQL query is large enough to be silently truncated.
 func (c *Client) fetchReviewerGroupsForRepo(ctx context.Context, prs []PullRequest) (map[string]*ReviewerGroupData, error) {
+	results := make(map[string]*ReviewerGroupData)
+	for start := 0; start < len(prs); start += reviewerGroupsChunkSize {
+		end := start + reviewerGroupsChunkSize
+		if end > len(prs) {
+			end = len(prs)
+		}
+		chunkResults, err := c.fetchReviewerGroupsChunk(ctx, prs[start:end])
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range chunkResults {
+			results[k] = v
+		}
+	}
+	return results, nil
+}
+
+// fetchReviewerGroupsChunk fetches reviewer groups for a single bounded batch of
+// PRs in one repository via one GraphQL query.
+func (c *Client) fetchReviewerGroupsChunk(ctx context.Context, prs []PullRequest) (map[string]*ReviewerGroupData, error) {
 	if len(prs) == 0 {
 		return make(map[string]*ReviewerGroupData), nil
 	}
