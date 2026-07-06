@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"path"
 	"strings"
 
@@ -57,6 +58,7 @@ func importanceRank(imp string) int {
 // nits before the merge); MergeFindings only unions what it is given.
 func MergeFindings(sets ...FindingSet) []types.LineComment {
 	var merged []types.LineComment
+	readmitted := 0
 	for si, set := range sets {
 		for _, c := range set.Comments {
 			if c.FilePath == "SUMMARY" {
@@ -73,8 +75,25 @@ func MergeFindings(sets ...FindingSet) []types.LineComment {
 			}
 			if si > 0 {
 				c.CommentBody = provenanceNote(set.Provenance) + c.CommentBody
+				readmitted++
 			}
 			merged = append(merged, c)
+		}
+	}
+	// A re-admitted finding can sit under a SUMMARY whose prose argues against
+	// it (the agent may have dismissed the very concern reconciliation kept).
+	// Readers weigh the summary heavily, so surface the contradiction rather
+	// than letting the dismissal silently win.
+	if readmitted > 0 {
+		for i := range merged {
+			if merged[i].FilePath == "SUMMARY" {
+				merged[i].CommentBody += fmt.Sprintf(
+					"\n\n---\n_Reconciliation: %d earlier-pass finding(s) below were retained despite"+
+						" not being independently confirmed. If this summary argues against one of"+
+						" them, treat that as an open disagreement to resolve, not a settled dismissal._",
+					readmitted)
+				break
+			}
 		}
 	}
 	return merged

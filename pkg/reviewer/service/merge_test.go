@@ -108,3 +108,25 @@ func TestMergeFindings_EmptyAndSingleSet(t *testing.T) {
 		t.Errorf("single set should pass through untagged: %+v", got)
 	}
 }
+
+// TestMergeFindings_SummaryReconciliationNote — when findings are re-admitted,
+// the primary SUMMARY must disclose the potential contradiction; when nothing
+// is re-admitted the SUMMARY stays untouched.
+func TestMergeFindings_SummaryReconciliationNote(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
+		lc("SUMMARY", 0, "LOW", "Verdict: approve"),
+		lc("a.ts", 5, "LOW", "nit"),
+	}}
+	gemini := FindingSet{Provenance: "first-pass", Comments: []types.LineComment{
+		lc("b.ts", 40, "CRITICAL", "crash"),
+	}}
+	got := MergeFindings(agent, gemini)
+	if !strings.Contains(got[0].CommentBody, "Reconciliation: 1 earlier-pass finding") {
+		t.Errorf("SUMMARY missing reconciliation note: %q", got[0].CommentBody)
+	}
+	// No re-admissions -> untouched SUMMARY.
+	got = MergeFindings(agent, FindingSet{Provenance: "first-pass", Comments: nil})
+	if strings.Contains(got[0].CommentBody, "Reconciliation") {
+		t.Errorf("SUMMARY should be untouched with no re-admissions: %q", got[0].CommentBody)
+	}
+}
