@@ -22,6 +22,10 @@ import (
 // DefaultAgentModel is the `claude` model used when AgentConfig.Model is empty.
 const DefaultAgentModel = "claude-opus-4-8"
 
+// DefaultAgentEffort is the `claude` reasoning effort used when
+// AgentConfig.Effort is empty. Kept at the historical hardcoded value.
+const DefaultAgentEffort = "medium"
+
 // AgentConfig holds runtime knobs for a single agent-review invocation.
 type AgentConfig struct {
 	CloneRootDir string        // parent dir for per-invocation clones
@@ -30,6 +34,7 @@ type AgentConfig struct {
 	MaxTurns     int           // abort after this many assistant turns
 	GitHubToken  string        // optional; HTTPS clone auth
 	Model        string        // `claude` model id; defaults to DefaultAgentModel if empty
+	Effort       string        // `claude` reasoning effort; defaults to DefaultAgentEffort if empty
 }
 
 // AgentReview is the result of a successful agent run.
@@ -127,11 +132,15 @@ func RunAgentReview(
 	if model == "" {
 		model = DefaultAgentModel
 	}
+	effort := agentCfg.Effort
+	if effort == "" {
+		effort = DefaultAgentEffort
+	}
 
 	args := []string{
 		"-p", prompt,
 		"--model", model,
-		"--effort", "medium",
+		"--effort", effort,
 		"--tools", "Read,Grep,Glob,Bash",
 		"--permission-mode", "bypassPermissions",
 		"--output-format", "stream-json",
@@ -140,8 +149,8 @@ func RunAgentReview(
 
 	// Log the argv without the full prompt (too big; promptAgentReview is static
 	// and the comment list is in geminiComments count above).
-	log.Printf("%s spawning claude (model=%s, effort=medium, tools=Read,Grep,Glob,Bash, prompt_chars=%d)",
-		logPrefix, model, len(prompt))
+	log.Printf("%s spawning claude (model=%s, effort=%s, tools=Read,Grep,Glob,Bash, prompt_chars=%d)",
+		logPrefix, model, effort, len(prompt))
 
 	spawnStart := time.Now()
 	proc, err := spawner.Spawn(runCtx, "claude", args, cloneDir)
