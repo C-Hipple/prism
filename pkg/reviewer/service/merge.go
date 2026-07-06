@@ -68,13 +68,30 @@ func MergeFindings(sets ...FindingSet) []types.LineComment {
 				continue
 			}
 			if di, ok := findDuplicate(merged, c); ok {
-				if importanceRank(c.Importance) > importanceRank(merged[di].Importance) {
-					merged[di].Importance = c.Importance
+				// Duplicates upgrade severity to the max — but an upgrade
+				// sourced from a lower-priority set is capped at MEDIUM for
+				// the same reason re-admissions are (see below): unconfirmed
+				// first-pass severity must not create blockers.
+				incoming := c.Importance
+				if si > 0 && importanceRank(incoming) > importanceRank("MEDIUM") {
+					incoming = "MEDIUM"
+				}
+				if importanceRank(incoming) > importanceRank(merged[di].Importance) {
+					merged[di].Importance = incoming
 				}
 				continue
 			}
 			if si > 0 {
 				c.CommentBody = provenanceNote(set.Provenance) + c.CommentBody
+				// Cap re-admitted findings at MEDIUM: measured on a set of
+				// known-good merged PRs, the first pass emits CRITICALs on
+				// half of them — re-admitting those at full severity would
+				// turn clean reviews into false blockers. MEDIUM keeps the
+				// finding visible on the exact line (recall is unaffected)
+				// without letting an unconfirmed concern gate a merge.
+				if importanceRank(c.Importance) > importanceRank("MEDIUM") {
+					c.Importance = "MEDIUM"
+				}
 				readmitted++
 			}
 			merged = append(merged, c)

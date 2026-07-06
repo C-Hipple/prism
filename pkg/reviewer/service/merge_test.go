@@ -26,8 +26,10 @@ func TestMergeFindings_DroppedFirstPassFindingSurvives(t *testing.T) {
 		t.Fatalf("want 3 findings, got %d: %+v", len(got), got)
 	}
 	readmitted := got[2]
-	if readmitted.Importance != "CRITICAL" {
-		t.Errorf("severity lost: %q", readmitted.Importance)
+	// Re-admissions cap at MEDIUM: unconfirmed first-pass severity must not
+	// create blockers (the first pass emits CRITICALs on half of clean PRs).
+	if readmitted.Importance != "MEDIUM" {
+		t.Errorf("re-admitted severity should cap at MEDIUM, got %q", readmitted.Importance)
 	}
 	if !strings.Contains(readmitted.CommentBody, "gemini finding") ||
 		!strings.Contains(readmitted.CommentBody, "welcome route breaks") {
@@ -49,8 +51,9 @@ func TestMergeFindings_DuplicateKeepsAgentPhrasingUpgradesSeverity(t *testing.T)
 	if got[0].CommentBody != "agent phrasing" {
 		t.Errorf("higher-priority phrasing should win: %q", got[0].CommentBody)
 	}
-	if got[0].Importance != "CRITICAL" {
-		t.Errorf("severity must upgrade to max, got %q", got[0].Importance)
+	// Upgrades sourced from a lower-priority set also cap at MEDIUM.
+	if got[0].Importance != "MEDIUM" {
+		t.Errorf("severity should upgrade but cap at MEDIUM, got %q", got[0].Importance)
 	}
 }
 
