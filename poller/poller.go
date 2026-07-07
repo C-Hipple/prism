@@ -23,10 +23,10 @@ import (
 
 // Timeout constants for review process management.
 // These values are coordinated to ensure consistent behavior:
-// - reviewProcessTimeout(): max time a review may run before the monitor
-//   treats it as hung and the stale-reset reclaims it (derived, not constant)
-// - ReviewProcessWarningThreshold: Time after which to warn about long-running reviews
-// - ErrorPRRetryTimeout: Time after which an "error" PR is retried
+//   - reviewProcessTimeout(): max time a review may run before the monitor
+//     treats it as hung and the stale-reset reclaims it (derived, not constant)
+//   - ReviewProcessWarningThreshold: Time after which to warn about long-running reviews
+//   - ErrorPRRetryTimeout: Time after which an "error" PR is retried
 const (
 	// ReviewPipelineMargin covers everything in a review besides the agent
 	// subprocess: the first-pass LLM stage (~4 min on large PRs), clone/fetch,
