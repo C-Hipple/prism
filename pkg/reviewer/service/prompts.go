@@ -225,8 +225,6 @@ Each object must have these fields:
 Include exactly one "SUMMARY" entry summarizing your overall take + verdict (approve / approve with suggestions / request changes).
 
 If you find no issues worth flagging, return a single SUMMARY entry only.
-
---- GEMINI COMMENTS (JSON) ---
 `
 
 // promptClassification is a fmt format string; %s placeholders receive
