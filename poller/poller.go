@@ -292,6 +292,7 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 	merged := service.MergeFindings(
 		service.FindingSet{Provenance: "agent", Comments: agentOut.Comments},
 		service.FindingSet{Provenance: "first-pass", Comments: firstPassCriticals},
+		service.FindingSet{Provenance: "mechanical", Comments: agentOut.Gates},
 	)
 	readmitted := len(merged) - len(agentOut.Comments)
 	result.Comments = merged
