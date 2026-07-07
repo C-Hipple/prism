@@ -35,6 +35,7 @@ type AgentConfig struct {
 // AgentReview is the result of a successful agent run.
 type AgentReview struct {
 	Comments []types.LineComment // parsed from the agent's final JSON response
+	Gates    []types.LineComment // mechanical gate findings (advisory, provenance "mechanical")
 	RawFinal string              // the agent's final result text (pre-parse, for debugging)
 	CloneDir string              // path to the per-invocation clone (kept for inspection)
 	LogPath  string              // path to the raw stream-json file
@@ -118,7 +119,15 @@ func RunAgentReview(
 	}()
 	log.Printf("%s clone ok (%s) at %s", logPrefix, time.Since(cloneStart), cloneDir)
 
-	prompt, err := buildAgentPromptContent(geminiComments)
+	// Mechanical gates: cheap deterministic checks over the diff + worktree.
+	// Their findings go into the prompt (the agent must address each) AND are
+	// returned for the reconciliation merge, so they survive dismissal.
+	gates := GatesForWorktree(runCtx, cloneDir, defaultBranch)
+	if len(gates) > 0 {
+		log.Printf("%s mechanical gates fired: %d", logPrefix, len(gates))
+	}
+
+	prompt, err := buildAgentPromptContent(geminiComments, gates)
 	if err != nil {
 		return nil, fmt.Errorf("agent: build prompt: %w", err)
 	}
@@ -209,6 +218,7 @@ func RunAgentReview(
 
 	return &AgentReview{
 		Comments: comments,
+		Gates:    gates,
 		RawFinal: parseResult.finalOutput,
 		CloneDir: cloneDir,
 		LogPath:  logPath,
@@ -253,14 +263,24 @@ func parseAgentJSON(raw string) ([]types.LineComment, error) {
 	return comments, nil
 }
 
-// buildAgentPromptContent prepends the static prompt template to a JSON block
-// of Gemini comments.
-func buildAgentPromptContent(geminiComments []types.LineComment) (string, error) {
+// buildAgentPromptContent assembles the agent prompt: the static template,
+// the mechanical-gate alerts (if any), then a JSON block of Gemini comments.
+func buildAgentPromptContent(geminiComments, gates []types.LineComment) (string, error) {
 	commentsJSON, err := json.MarshalIndent(geminiComments, "", "  ")
 	if err != nil {
 		return "", err
 	}
-	return promptAgentReview + string(commentsJSON), nil
+	var b strings.Builder
+	b.WriteString(promptAgentReview)
+	if len(gates) > 0 {
+		b.WriteString("\n--- MECHANICAL ALERTS (deterministic checks; explicitly address each in your review) ---\n")
+		for _, g := range gates {
+			b.WriteString("- [" + g.FilePath + "] " + g.CommentBody + "\n")
+		}
+	}
+	b.WriteString("\n--- GEMINI COMMENTS (JSON) ---\n")
+	b.Write(commentsJSON)
+	return b.String(), nil
 }
 
 // cacheMutexes serializes cache-repo work per (owner, repo). Each repo gets
