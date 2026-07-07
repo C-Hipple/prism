@@ -380,8 +380,15 @@ func (p *Poller) Start(ctx context.Context) {
 	p.updateLeadership(ctx)
 	go p.runLeaderElection(ctx)
 
-	// Run immediately on start (leader only).
-	if p.isLeader() {
+	// Run immediately on start (leader only) — unless polling is disabled
+	// outright. Benchmark and on-demand deployments set DISABLE_POLLING to
+	// stop the boot-time and scheduled polls from ingesting real open PRs
+	// (burning tokens and writing review artifacts that shadow the primary
+	// deployment's for the same commits). DISABLE_POLLING takes precedence
+	// over leadership; manual triggers and on-demand reviews still work.
+	if p.cfg.DisablePolling {
+		log.Println("DISABLE_POLLING set — skipping initial and scheduled polls (manual trigger + on-demand reviews still available)")
+	} else if p.isLeader() {
 		p.startPoll(ctx, "initial")
 	} else {
 		log.Printf("[LEADER] not leader at startup, skipping initial poll")
@@ -393,6 +400,9 @@ func (p *Poller) Start(ctx context.Context) {
 			log.Println("Poller stopped")
 			return
 		case tickTime := <-ticker.C:
+			if p.cfg.DisablePolling {
+				continue
+			}
 			elapsed := tickTime.Sub(tickerStartTime)
 			log.Printf("Ticker fired at %s (%.3fs since ticker start)", tickTime.Format("15:04:05.000"), elapsed.Seconds())
 			// Only the lease holder runs the automatic cycle, so concurrent

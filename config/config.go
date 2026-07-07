@@ -30,6 +30,7 @@ type Config struct {
 
 	// General configuration
 	PollingInterval time.Duration
+	DisablePolling  bool   // skip initial+scheduled polls (benchmark/on-demand deployments)
 	ReviewsDir      string // Deprecated: use GCSBucket instead
 	GCSBucket       string
 	ServerPort      string
@@ -101,6 +102,7 @@ func Load() *Config {
 
 		// General
 		PollingInterval: pollingInterval,
+		DisablePolling:  os.Getenv("DISABLE_POLLING") == "true",
 		ReviewsDir:      getEnvOrDefault("REVIEWS_DIR", "./reviews"), // Deprecated
 		GCSBucket:       os.Getenv("GCS_BUCKET"),                     // Required for cloud storage
 		ServerPort:      getEnvOrDefault("SERVER_PORT", "8080"),
