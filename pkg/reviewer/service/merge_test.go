@@ -19,7 +19,7 @@ func TestMergeFindings_DroppedFirstPassFindingSurvives(t *testing.T) {
 		lc("a/b.ts", 10, "LOW", "nit"),
 	}}
 	gemini := FindingSet{Provenance: "gemini", Comments: []types.LineComment{
-		lc("src/urlStateBase.ts", 85, "CRITICAL", "welcome route breaks"),
+		lc("src/routing.ts", 85, "CRITICAL", "route classification breaks"),
 	}}
 	got := MergeFindings(agent, gemini)
 	if len(got) != 3 {
@@ -32,7 +32,7 @@ func TestMergeFindings_DroppedFirstPassFindingSurvives(t *testing.T) {
 		t.Errorf("re-admitted severity should cap at MEDIUM, got %q", readmitted.Importance)
 	}
 	if !strings.Contains(readmitted.CommentBody, "gemini finding") ||
-		!strings.Contains(readmitted.CommentBody, "welcome route breaks") {
+		!strings.Contains(readmitted.CommentBody, "route classification breaks") {
 		t.Errorf("provenance tag or body missing: %q", readmitted.CommentBody)
 	}
 }
