@@ -242,6 +242,13 @@ func TestParseAgentJSON(t *testing.T) {
 		{"suffix only", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n\nHope that helps!", 1},
 		{"empty array", `[]`, 0},
 		{"empty array with suffix", "[]\nNo issues found.", 0},
+		// Bracket-balance regressions: suffix prose CONTAINING brackets used
+		// to defeat the last-"]" slice and collapse the review to a SUMMARY
+		// blob (observed at ~17-25% of runs under some configs).
+		{"suffix with brackets", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n\nNote: check arr[i] bounds too!", 1},
+		{"suffix with fenced code", "[{\"file_path\":\"a.go\",\"line_number\":1,\"comment_body\":\"x\"}]\n```suggestion\nvals[0] = y\n```", 1},
+		{"brackets inside string body", `[{"file_path":"a.go","line_number":1,"comment_body":"use arr[0] and \"quoted [x]\" here"}]`, 1},
+		{"nested arrays in body", `[{"file_path":"a.go","line_number":1,"comment_body":"matrix"},{"file_path":"b.go","line_number":2,"comment_body":"[[1,2],[3]]"}]`, 2},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

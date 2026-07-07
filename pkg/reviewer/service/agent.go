@@ -241,16 +241,15 @@ func parseAgentJSON(raw string) ([]types.LineComment, error) {
 	trimmed = strings.TrimSuffix(trimmed, "```")
 	trimmed = strings.TrimSpace(trimmed)
 
-	// If there's a top-level array, slice to it. The opening `[` is the
-	// first one; the matching close is the last `]` in the trimmed string,
-	// since a valid review payload is a single array. (Per-character
-	// bracket-balance parsing isn't worth the complexity for our content.)
-	//
-	// Use start >= 0 not start > 0: when the model emits a clean array
-	// followed by a conversational suffix ("[...]\nLet me know!"), start
-	// is 0 and we still need to strip the suffix at end+1.
+	// If there's a top-level array, slice to it by BRACKET BALANCE from the
+	// first `[` — not to the last `]` in the string. The last-`]` heuristic
+	// broke whenever conversational suffix text contained a bracket (e.g. a
+	// trailing "```suggestion … arr[i] …" block): the slice then spanned
+	// prose, json.Unmarshal failed, and the whole review collapsed into a
+	// single SUMMARY blob. Measured on benchmark runs this destroyed the
+	// structured output of ~17-25%% of reviews under some configs.
 	if start := strings.Index(trimmed, "["); start >= 0 {
-		if end := strings.LastIndex(trimmed, "]"); end > start {
+		if end := matchBracket(trimmed, start); end > start {
 			trimmed = trimmed[start : end+1]
 		}
 	}
@@ -260,6 +259,41 @@ func parseAgentJSON(raw string) ([]types.LineComment, error) {
 		return nil, err
 	}
 	return comments, nil
+}
+
+// matchBracket returns the index of the `]` closing the `[` at start,
+// tracking nesting and skipping bracket characters inside JSON strings
+// (respecting backslash escapes). Returns -1 if unbalanced.
+func matchBracket(s string, start int) int {
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // buildAgentPromptContent prepends the static prompt template to a JSON block
