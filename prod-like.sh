@@ -151,6 +151,7 @@ docker run --rm \
   -e "AGENT_MAX_TURNS=$AGENT_MAX_TURNS" \
   -e "AGENT_MODEL=${AGENT_MODEL:-}" \
   -e "AGENT_EFFORT=${AGENT_EFFORT:-}" \
+  -e "DISABLE_POLLING=${DISABLE_POLLING:-}" \
   -e "SERVER_PORT=8080" \
   -e "SKIP_DB_MIGRATIONS=$SKIP_DB_MIGRATIONS" \
   -e "GOOGLE_APPLICATION_CREDENTIALS=/home/appuser/.config/gcloud/application_default_credentials.json" \

@@ -504,3 +504,29 @@ func TestReviewAPI_path_traversal_rejected(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, w.Code, "should reject sha=%q", malicious)
 	}
 }
+
+// TestHandleReviewFromGCS_JSONSidecarContentType verifies the /reviews/ route
+// serves the .json findings sidecar as application/json (not text/html), so
+// programmatic callers polling findings_url get a correct content type. The
+// rendered .html review keeps text/html.
+func TestHandleReviewFromGCS_JSONSidecarContentType(t *testing.T) {
+	server, _, _, dir := newReviewAPITestServer(t)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "owner_repo_28951_8c147ff.json"), []byte(`{"ok":true}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "owner_repo_28951_8c147ff.html"), []byte(`<html></html>`), 0o644))
+
+	cases := []struct {
+		path     string
+		wantType string
+	}{
+		{"/reviews/owner_repo_28951_8c147ff.json", "application/json"},
+		{"/reviews/owner_repo_28951_8c147ff.html", "text/html; charset=utf-8"},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		w := httptest.NewRecorder()
+		server.handleReviewFromGCS(w, req)
+		assert.Equal(t, http.StatusOK, w.Code, tc.path)
+		assert.Equal(t, tc.wantType, w.Header().Get("Content-Type"), tc.path)
+	}
+}

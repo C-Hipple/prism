@@ -2,6 +2,8 @@ package poller
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"pr-review-server/config"
@@ -23,19 +26,21 @@ import (
 
 // Timeout constants for review process management.
 // These values are coordinated to ensure consistent behavior:
-// - ReviewProcessTimeout: Max time allowed for a review to complete before killing
-// - StaleReviewResetTimeout: Time after which a "generating" PR is considered stale
-// - ReviewProcessWarningThreshold: Time after which to warn about long-running reviews
-// - ErrorPRRetryTimeout: Time after which an "error" PR is retried
+//   - reviewProcessTimeout(): max time a review may run before the monitor
+//     treats it as hung and the stale-reset reclaims it (derived, not constant)
+//   - ReviewProcessWarningThreshold: Time after which to warn about long-running reviews
+//   - ErrorPRRetryTimeout: Time after which an "error" PR is retried
 const (
-	// ReviewProcessTimeout is the maximum time allowed for a review process before killing it.
-	// This is used by the process monitor to force-kill hung review processes.
-	ReviewProcessTimeout = 5 * time.Minute
-
-	// StaleReviewResetTimeout is how long a PR can be in "generating" status before being reset.
-	// This should be >= ReviewProcessTimeout to avoid resetting while still running.
-	// Using the same value ensures consistent behavior.
-	StaleReviewResetTimeout = 5 * time.Minute
+	// ReviewPipelineMargin covers everything in a review besides the agent
+	// subprocess: the first-pass LLM stage (~4 min on large PRs), clone/fetch,
+	// and artifact save. Added to the configured agent wall-clock budget by
+	// reviewProcessTimeout() to derive the monitor and stale-reset timeouts.
+	//
+	// The previous fixed 5-minute ReviewProcessTimeout was SHORTER than the
+	// agent wall-clock budget alone (6 min in prod), so healthy long-running
+	// reviews were untracked mid-flight; under concurrency their results were
+	// then lost to stale-reset/retrigger races instead of being saved.
+	ReviewPipelineMargin = 8 * time.Minute
 
 	// ReviewProcessWarningThreshold is when to start warning about long-running reviews.
 	ReviewProcessWarningThreshold = 2 * time.Minute
@@ -101,6 +106,90 @@ type Poller struct {
 	// Buffered to AgentMaxConcurrent; nil if AgentMaxConcurrent <= 0
 	// (unlimited, used by tests).
 	agentSlots chan struct{}
+	// Leader election: only the instance holding the DB lease runs the automatic
+	// poll cycle, so multiple instances (e.g. a deploy overlap) never poll
+	// concurrently. holderID is unique per instance; isLeaderFlag is kept fresh
+	// by runLeaderElection and read by the poll loop. Empty holderID disables
+	// election (single-process tests that call poll() directly are unaffected,
+	// since election only gates Start()'s loop).
+	holderID     string
+	isLeaderFlag atomic.Bool
+}
+
+// Leader-election lease timing. The lease must outlive a poll cycle by a
+// comfortable margin (a leader mid-poll must not lose the lease), and renewal
+// must beat expiry several times over so a single missed renew doesn't trigger
+// a spurious failover.
+const (
+	leaderLeaseTTL      = 90 * time.Second
+	leaderRenewInterval = 30 * time.Second
+)
+
+// newHolderID returns a per-instance leader-election identity: the Cloud Run
+// revision (shared by a revision's instances) plus random bytes (unique per
+// instance), so two instances of the same revision still contend correctly.
+func newHolderID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		// rand failure is effectively impossible; fall back to a time-based id.
+		return fmt.Sprintf("%s-%d", revisionName(), time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%s-%s", revisionName(), hex.EncodeToString(buf))
+}
+
+func revisionName() string {
+	if rev := os.Getenv("K_REVISION"); rev != "" {
+		return rev
+	}
+	return "local"
+}
+
+// isLeader reports whether this instance currently holds the poller lease.
+// When election is disabled (empty holderID, e.g. direct unit-test calls), it
+// reports true so callers behave as a lone poller.
+func (p *Poller) isLeader() bool {
+	if p.holderID == "" {
+		return true
+	}
+	return p.isLeaderFlag.Load()
+}
+
+// updateLeadership renews/acquires the lease once and records the result.
+// On a lease-query error it fails OPEN (assume leadership) so a transient DB
+// hiccup degrades to the old always-poll behavior rather than halting polling
+// across the whole fleet.
+func (p *Poller) updateLeadership(ctx context.Context) bool {
+	if p.holderID == "" {
+		return true
+	}
+	leader, err := p.db.TryAcquireOrRenewLeadership(p.holderID, leaderLeaseTTL)
+	if err != nil {
+		log.Printf("[LEADER] lease query failed, assuming leadership to avoid stalling polls: %v", err)
+		leader = true
+	}
+	if prev := p.isLeaderFlag.Swap(leader); prev != leader {
+		if leader {
+			log.Printf("[LEADER] acquired poller leadership (holder=%s)", p.holderID)
+		} else {
+			log.Printf("[LEADER] lost poller leadership (holder=%s); another instance is polling", p.holderID)
+		}
+	}
+	return leader
+}
+
+// runLeaderElection renews the lease on a steady cadence independent of the
+// poll cycle, so lease validity never depends on how long a poll takes.
+func (p *Poller) runLeaderElection(ctx context.Context) {
+	ticker := time.NewTicker(leaderRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.updateLeadership(ctx)
+		}
+	}
 }
 
 func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsClient *gcs.Client) *Poller {
@@ -114,6 +203,7 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 		triggerChan:      make(chan struct{}, 1), // Buffered to prevent blocking
 		activeReviews:    make(map[string]ProcessInfo),
 		agentSpawner:     service.DefaultSpawner{},
+		holderID:         newHolderID(),
 	}
 	if cfg.AgentMaxConcurrent > 0 {
 		p.agentSlots = make(chan struct{}, cfg.AgentMaxConcurrent)
@@ -284,9 +374,28 @@ func (p *Poller) Start(ctx context.Context) {
 
 	log.Println("Starting poller...")
 	log.Printf("Ticker created at %s, will fire every %v", tickerStartTime.Format("15:04:05.000"), p.cfg.PollingInterval)
+	if p.holderID != "" {
+		log.Printf("[LEADER] poller leadership enabled (holder=%s, lease=%v, renew=%v)", p.holderID, leaderLeaseTTL, leaderRenewInterval)
+	}
 
-	// Run immediately on start
-	p.startPoll(ctx, "initial")
+	// Acquire/renew leadership once synchronously so the initial poll reflects it,
+	// then keep the lease fresh in the background.
+	p.updateLeadership(ctx)
+	go p.runLeaderElection(ctx)
+
+	// Run immediately on start (leader only) — unless polling is disabled
+	// outright. Benchmark and on-demand deployments set DISABLE_POLLING to
+	// stop the boot-time and scheduled polls from ingesting real open PRs
+	// (burning tokens and writing review artifacts that shadow the primary
+	// deployment's for the same commits). DISABLE_POLLING takes precedence
+	// over leadership; manual triggers and on-demand reviews still work.
+	if p.cfg.DisablePolling {
+		log.Println("DISABLE_POLLING set — skipping initial and scheduled polls (manual trigger + on-demand reviews still available)")
+	} else if p.isLeader() {
+		p.startPoll(ctx, "initial")
+	} else {
+		log.Printf("[LEADER] not leader at startup, skipping initial poll")
+	}
 
 	for {
 		select {
@@ -294,13 +403,35 @@ func (p *Poller) Start(ctx context.Context) {
 			log.Println("Poller stopped")
 			return
 		case tickTime := <-ticker.C:
+			if p.cfg.DisablePolling {
+				continue
+			}
 			elapsed := tickTime.Sub(tickerStartTime)
 			log.Printf("Ticker fired at %s (%.3fs since ticker start)", tickTime.Format("15:04:05.000"), elapsed.Seconds())
-			p.startPoll(ctx, "scheduled")
+			// Only the lease holder runs the automatic cycle, so concurrent
+			// instances never poll (and prune) at the same time. Manual triggers
+			// below are deliberately exempt — they're explicit user actions.
+			if p.isLeader() {
+				p.startPoll(ctx, "scheduled")
+			} else {
+				log.Printf("[LEADER] not leader, skipping scheduled poll")
+			}
 		case <-p.triggerChan:
 			p.startPoll(ctx, "manual")
 		}
 	}
+}
+
+// reviewProcessTimeout is the maximum legitimate duration of one review:
+// the configured agent wall-clock budget plus ReviewPipelineMargin for the
+// first-pass stage, clone, and save. The monitor and the stale-generating
+// reset both derive from it so they can never fire on a healthy review.
+func (p *Poller) reviewProcessTimeout() time.Duration {
+	t := ReviewPipelineMargin
+	if p.cfg != nil && p.cfg.AgentWallClockSec > 0 {
+		t += time.Duration(p.cfg.AgentWallClockSec) * time.Second
+	}
+	return t
 }
 
 func (p *Poller) monitorReviewerProcesses(ctx context.Context, ticker *time.Ticker) {
@@ -309,10 +440,11 @@ func (p *Poller) monitorReviewerProcesses(ctx context.Context, ticker *time.Tick
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			timeout := p.reviewProcessTimeout()
 			p.reviewsMutex.Lock()
 			for key, info := range p.activeReviews {
 				elapsed := time.Since(info.StartTime)
-				if elapsed > ReviewProcessTimeout {
+				if elapsed > timeout {
 					log.Printf("[MONITOR] WARNING: review for %s has been running for %v (timeout), removing from tracking", key, elapsed)
 					// Remove from tracking (goroutine will finish on its own)
 					delete(p.activeReviews, key)
@@ -1016,7 +1148,7 @@ func (p *Poller) poll(ctx context.Context) {
 
 	// Reset any PRs stuck in "generating" for too long
 	log.Printf("[POLL] Checking for stale PRs...")
-	resetCount, err := p.db.ResetStaleGeneratingPRs(int(StaleReviewResetTimeout.Minutes()))
+	resetCount, err := p.db.ResetStaleGeneratingPRs(int(p.reviewProcessTimeout().Minutes()))
 	if err != nil {
 		log.Printf("[POLL] ERROR: Failed to reset stale PRs: %v", err)
 	} else if resetCount > 0 {

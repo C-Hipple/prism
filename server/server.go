@@ -711,12 +711,25 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 		s.poller.ProcessReviewImmediate(context.Background(), req.Owner, req.Repo, req.Number, headSHA, title, author, createdAtPtr, draft, true)
 	}
 
+	// Return the deterministic, DB-independent URLs the review will be saved
+	// to. The review file is named purely from (owner, repo, number, HEAD SHA)
+	// and served from GCS by handleReviewFromGCS without any DB lookup, so
+	// these URLs stay valid even after the closed-PR cleanup prunes the row.
+	// The caller polls findings_url: 404 while the review generates, 200 with
+	// the structured findings once it completes (force=true overwrites the same
+	// object, and the object's Cache-Control is no-cache, so a re-review of the
+	// same commit updates in place).
+	htmlFile := gcs.ReviewFileName(req.Owner, req.Repo, req.Number, headSHA)
+	jsonFile := gcs.ReviewJSONFileName(htmlFile)
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{ // nolint:errcheck
-		"status": "success",
-		"commit": headSHA,
-		"state":  ghPR.GetState(),
-		"merged": ghPR.GetMerged(),
+		"status":       "success",
+		"commit":       headSHA,
+		"state":        ghPR.GetState(),
+		"merged":       ghPR.GetMerged(),
+		"review_url":   reviewURL(htmlFile),
+		"findings_url": reviewURL(jsonFile),
 	})
 }
 
@@ -1510,6 +1523,13 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 	}
 	filename = cleaned
 
+	// Serve the JSON sidecar with the correct content type; everything else is
+	// the rendered HTML review.
+	contentType := "text/html; charset=utf-8"
+	if strings.HasSuffix(filename, ".json") {
+		contentType = "application/json"
+	}
+
 	var content []byte
 	var err error
 
@@ -1519,7 +1539,7 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 		content, err = s.gcsClient.GetReviewContent(ctx, filename)
 		if err == nil {
 			// Successfully fetched from GCS
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Content-Type", contentType)
 			// Reviews used to be immutable per commit, but the manual trigger now
 			// force-overwrites the same filename. Make the browser revalidate so
 			// the new content shows up after a regen.
@@ -1549,7 +1569,7 @@ func (s *Server) handleReviewFromGCS(w http.ResponseWriter, r *http.Request) {
 	// Set headers. Match the GCS branch above: reviews used to be immutable
 	// per commit, but the manual trigger now force-overwrites the same
 	// filename, so browsers must revalidate to pick up the new content.
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, no-cache, must-revalidate")
 
 	_, _ = w.Write(content) // nolint:errcheck
