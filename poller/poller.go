@@ -26,19 +26,21 @@ import (
 
 // Timeout constants for review process management.
 // These values are coordinated to ensure consistent behavior:
-// - ReviewProcessTimeout: Max time allowed for a review to complete before killing
-// - StaleReviewResetTimeout: Time after which a "generating" PR is considered stale
-// - ReviewProcessWarningThreshold: Time after which to warn about long-running reviews
-// - ErrorPRRetryTimeout: Time after which an "error" PR is retried
+//   - reviewProcessTimeout(): max time a review may run before the monitor
+//     treats it as hung and the stale-reset reclaims it (derived, not constant)
+//   - ReviewProcessWarningThreshold: Time after which to warn about long-running reviews
+//   - ErrorPRRetryTimeout: Time after which an "error" PR is retried
 const (
-	// ReviewProcessTimeout is the maximum time allowed for a review process before killing it.
-	// This is used by the process monitor to force-kill hung review processes.
-	ReviewProcessTimeout = 5 * time.Minute
-
-	// StaleReviewResetTimeout is how long a PR can be in "generating" status before being reset.
-	// This should be >= ReviewProcessTimeout to avoid resetting while still running.
-	// Using the same value ensures consistent behavior.
-	StaleReviewResetTimeout = 5 * time.Minute
+	// ReviewPipelineMargin covers everything in a review besides the agent
+	// subprocess: the first-pass LLM stage (~4 min on large PRs), clone/fetch,
+	// and artifact save. Added to the configured agent wall-clock budget by
+	// reviewProcessTimeout() to derive the monitor and stale-reset timeouts.
+	//
+	// The previous fixed 5-minute ReviewProcessTimeout was SHORTER than the
+	// agent wall-clock budget alone (6 min in prod), so healthy long-running
+	// reviews were untracked mid-flight; under concurrency their results were
+	// then lost to stale-reset/retrigger races instead of being saved.
+	ReviewPipelineMargin = 8 * time.Minute
 
 	// ReviewProcessWarningThreshold is when to start warning about long-running reviews.
 	ReviewProcessWarningThreshold = 2 * time.Minute
@@ -409,16 +411,29 @@ func (p *Poller) Start(ctx context.Context) {
 	}
 }
 
+// reviewProcessTimeout is the maximum legitimate duration of one review:
+// the configured agent wall-clock budget plus ReviewPipelineMargin for the
+// first-pass stage, clone, and save. The monitor and the stale-generating
+// reset both derive from it so they can never fire on a healthy review.
+func (p *Poller) reviewProcessTimeout() time.Duration {
+	t := ReviewPipelineMargin
+	if p.cfg != nil && p.cfg.AgentWallClockSec > 0 {
+		t += time.Duration(p.cfg.AgentWallClockSec) * time.Second
+	}
+	return t
+}
+
 func (p *Poller) monitorReviewerProcesses(ctx context.Context, ticker *time.Ticker) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			timeout := p.reviewProcessTimeout()
 			p.reviewsMutex.Lock()
 			for key, info := range p.activeReviews {
 				elapsed := time.Since(info.StartTime)
-				if elapsed > ReviewProcessTimeout {
+				if elapsed > timeout {
 					log.Printf("[MONITOR] WARNING: review for %s has been running for %v (timeout), removing from tracking", key, elapsed)
 					// Remove from tracking (goroutine will finish on its own)
 					delete(p.activeReviews, key)
@@ -1122,7 +1137,7 @@ func (p *Poller) poll(ctx context.Context) {
 
 	// Reset any PRs stuck in "generating" for too long
 	log.Printf("[POLL] Checking for stale PRs...")
-	resetCount, err := p.db.ResetStaleGeneratingPRs(int(StaleReviewResetTimeout.Minutes()))
+	resetCount, err := p.db.ResetStaleGeneratingPRs(int(p.reviewProcessTimeout().Minutes()))
 	if err != nil {
 		log.Printf("[POLL] ERROR: Failed to reset stale PRs: %v", err)
 	} else if resetCount > 0 {

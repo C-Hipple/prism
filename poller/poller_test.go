@@ -3323,3 +3323,27 @@ func TestStaleReset_DoesNotResetTrackedReviews(t *testing.T) {
 		}
 	}
 }
+
+// TestReviewProcessTimeout_ExceedsAgentBudget locks in the fix for the
+// monitor-shorter-than-wall-clock footgun: the derived timeout must always
+// exceed the configured agent wall-clock budget, and fall back to the bare
+// pipeline margin when no agent budget is configured.
+func TestReviewProcessTimeout_ExceedsAgentBudget(t *testing.T) {
+	p := newTestPoller(&MockGitHubClient{}, &MockDatabase{})
+
+	// No agent budget configured -> just the pipeline margin.
+	if got := p.reviewProcessTimeout(); got != ReviewPipelineMargin {
+		t.Errorf("without agent budget: got %v, want %v", got, ReviewPipelineMargin)
+	}
+
+	// Prod-like budget: 360s wall clock -> margin + 6m, strictly above budget.
+	p.cfg.AgentWallClockSec = 360
+	got := p.reviewProcessTimeout()
+	want := ReviewPipelineMargin + 6*time.Minute
+	if got != want {
+		t.Errorf("with 360s budget: got %v, want %v", got, want)
+	}
+	if got <= 6*time.Minute {
+		t.Errorf("timeout %v must exceed the agent wall-clock budget", got)
+	}
+}
