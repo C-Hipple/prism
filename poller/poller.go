@@ -22,6 +22,7 @@ import (
 	"pr-review-server/pkg/reviewer/llm"
 	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/service"
+	"pr-review-server/pkg/reviewer/types"
 )
 
 // Timeout constants for review process management.
@@ -275,10 +276,28 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		return nil, fmt.Errorf("agent review: %w", agentErr)
 	}
 
-	result.Comments = agentOut.Comments
+	// Reconcile instead of replace: the agent's output used to fully overwrite
+	// the first-pass findings, and evaluation against real release blockers
+	// showed the agent deleting correct first-pass catches it had argued itself
+	// out of. The merge keeps the agent as the canonical voice (its phrasing
+	// and SUMMARY win, and duplicates collapse into it) but re-admits
+	// first-pass CRITICALs the agent dropped, provenance-tagged. CRITICAL-only
+	// is deliberate noise control — loosen only with benchmark evidence.
+	firstPassCriticals := make([]types.LineComment, 0, len(result.Comments))
+	for _, c := range result.Comments {
+		if strings.EqualFold(strings.TrimSpace(c.Importance), "CRITICAL") && c.FilePath != "SUMMARY" {
+			firstPassCriticals = append(firstPassCriticals, c)
+		}
+	}
+	merged := service.MergeFindings(
+		service.FindingSet{Provenance: "agent", Comments: agentOut.Comments},
+		service.FindingSet{Provenance: "first-pass", Comments: firstPassCriticals},
+	)
+	readmitted := len(merged) - len(agentOut.Comments)
+	result.Comments = merged
 	result.ComputeImportanceCounts()
-	log.Printf("[REVIEWER] PR %d: agent stage ok (clone=%s, log=%s, comments=%d, critical=%d, medium=%d, low=%d)",
-		pr.Number, agentOut.CloneDir, agentOut.LogPath, len(agentOut.Comments),
+	log.Printf("[REVIEWER] PR %d: agent stage ok (clone=%s, log=%s, agent_comments=%d, readmitted_first_pass=%d, critical=%d, medium=%d, low=%d)",
+		pr.Number, agentOut.CloneDir, agentOut.LogPath, len(agentOut.Comments), readmitted,
 		result.CriticalCount, result.MediumCount, result.LowCount)
 
 	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModel)
