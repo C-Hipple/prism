@@ -2,8 +2,8 @@ package service
 
 import (
 	"context"
-	"os"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
@@ -21,7 +21,7 @@ import (
 // "mechanical", so an agent that waves them off cannot delete them.
 
 var (
-	gateSharedPath = regexp.MustCompile(`(^|/)(common|shared|base|lib|utils?)/|(^|/)Base[A-Z]\w*\.(tsx?|jsx?|py)$`)
+	gateSharedPath  = regexp.MustCompile(`(^|/)(common|shared|base|lib|utils?)/|(^|/)Base[A-Z]\w*\.(tsx?|jsx?|py)$`)
 	gateSettingsRef = regexp.MustCompile(`settings\.([A-Z][A-Z0-9_]{2,})`)
 	gateTopicClass  = regexp.MustCompile(`(?m)^\+class ([A-Z]\w*Topic)\b`)
 
@@ -35,9 +35,9 @@ var (
 
 // diffFile is one changed file: its path and the diff's added lines.
 type diffFile struct {
-	Path  string
-	Added []string // lines added by the PR (no leading '+')
-	Status string  // "modified", "added", "removed"
+	Path   string
+	Added  []string // lines added by the PR (no leading '+')
+	Status string   // "modified", "added", "removed"
 }
 
 // RunMechanicalGates evaluates all gates and returns provenance-ready findings

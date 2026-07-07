@@ -82,8 +82,8 @@ func TestGates_RegistrySplit(t *testing.T) {
 		Path:   "be_topics/room.py",
 		Status: "modified",
 		Added: []string{
-			"class WiredTopic(RoomTopic):",   // FE counterpart exists -> no alert
-			"class OrphanTopic(RoomTopic):",  // no FE counterpart -> alert
+			"class WiredTopic(RoomTopic):",  // FE counterpart exists -> no alert
+			"class OrphanTopic(RoomTopic):", // no FE counterpart -> alert
 		},
 	}}
 	got := RunMechanicalGates(context.Background(), dir, files)
