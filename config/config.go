@@ -45,6 +45,7 @@ type Config struct {
 	AgentMaxTurns      int
 	AgentMaxConcurrent int    // <=0 disables the cap (unlimited concurrency)
 	AgentModel         string // `claude` model id for agent reviews (empty = service default)
+	AgentEffort        string // `claude` reasoning effort for agent reviews (empty = service default)
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -116,6 +117,7 @@ func Load() *Config {
 		AgentMaxTurns:      getEnvIntOrDefault("AGENT_MAX_TURNS", 40),
 		AgentMaxConcurrent: getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
 		AgentModel:         os.Getenv("AGENT_MODEL"),
+		AgentEffort:        os.Getenv("AGENT_EFFORT"),
 	}
 }
 
