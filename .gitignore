@@ -66,3 +66,6 @@ cloud-sql-proxy
 # Local-only ops docs — never commit
 ARCHITECTURE.md
 DEPLOY.md
+
+# Local eval harness — private data (case manifests, run artifacts); never commit
+benchmark/
