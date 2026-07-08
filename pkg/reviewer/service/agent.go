@@ -133,7 +133,7 @@ func RunAgentReview(
 	// Parse the PR diff once; the same []diffFile feeds both the mechanical
 	// gates and the bug-memory matcher, so offline dry-runs of either are
 	// predictive of production behavior.
-	diffFiles := diffFilesForWorktree(runCtx, cloneDir, defaultBranch)
+	diffFiles := diffFilesForWorktree(runCtx, cloneDir, defaultBranch, agentCfg.GitHubToken)
 
 	// Mechanical gates: cheap deterministic checks over the diff + worktree.
 	// Their findings go into the prompt (the agent must address each) AND are

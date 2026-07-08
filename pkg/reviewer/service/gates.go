@@ -245,7 +245,7 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 // Best-effort — on any error (or a pathological >20k-added-lines diff) it
 // returns nil, which downstream consumers (gates, bug memory) treat as
 // "no signal", never as a review failure.
-func diffFilesForWorktree(ctx context.Context, dir, defaultBranch string) []diffFile {
+func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token string) []diffFile {
 	if dir == "" {
 		return nil
 	}
@@ -262,8 +262,10 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch string) []diff
 		// PRs (replays, benchmarks) do not. Deepen once and retry rather
 		// than silently reporting "no signal".
 		log.Printf("[GATES] diff vs %s failed (%v) — deepening history and retrying", base, err)
-		if _, derr := runGit(ctx, dir, "fetch", "--quiet", "--deepen=4000", "origin"); derr != nil {
-			log.Printf("[GATES] deepen failed: %v — no deterministic signals for this review", derr)
+		deepenArgs := authHeaderArgs(token)
+		deepenArgs = append(deepenArgs, "fetch", "--quiet", "--deepen=4000", "origin")
+		if out, derr := runGit(ctx, dir, deepenArgs...); derr != nil {
+			log.Printf("[GATES] deepen failed: %v (%s) — no deterministic signals for this review", derr, redactToken(out, token))
 			return nil
 		}
 		files, err = parseNameStatusDiff(ctx, dir, base)
@@ -297,7 +299,7 @@ type OfflineWorktreeReport struct {
 // worktree exactly as production would (same diff parse, same matchers).
 func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *BugMemoryLibrary, owner, repo string, prNumber int) OfflineWorktreeReport {
 	rep := OfflineWorktreeReport{}
-	files := diffFilesForWorktree(ctx, dir, defaultBranch)
+	files := diffFilesForWorktree(ctx, dir, defaultBranch, "")
 	if files == nil {
 		return rep
 	}
@@ -312,7 +314,7 @@ func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *B
 // any error it returns nil findings (gates are advisory; they must never
 // fail a review).
 func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
-	files := diffFilesForWorktree(ctx, dir, defaultBranch)
+	files := diffFilesForWorktree(ctx, dir, defaultBranch, "")
 	if files == nil {
 		return nil
 	}
