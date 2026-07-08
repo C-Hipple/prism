@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -256,7 +257,20 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch string) []diff
 	}
 	files, err := parseNameStatusDiff(ctx, dir, base)
 	if err != nil {
-		return nil
+		// The usual cause: a shallow clone (prod uses --depth 200) has no
+		// merge-base for the three-dot diff. Fresh PRs fit the window; old
+		// PRs (replays, benchmarks) do not. Deepen once and retry rather
+		// than silently reporting "no signal".
+		log.Printf("[GATES] diff vs %s failed (%v) — deepening history and retrying", base, err)
+		if _, derr := runGit(ctx, dir, "fetch", "--quiet", "--deepen=4000", "origin"); derr != nil {
+			log.Printf("[GATES] deepen failed: %v — no deterministic signals for this review", derr)
+			return nil
+		}
+		files, err = parseNameStatusDiff(ctx, dir, base)
+		if err != nil {
+			log.Printf("[GATES] diff still failing after deepen: %v — no deterministic signals for this review", err)
+			return nil
+		}
 	}
 	// Guard pathological diffs: gates and memory are per-line regex scans.
 	total := 0

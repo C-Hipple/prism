@@ -60,7 +60,7 @@ func main() {
 		owner, repoName = parts[0], parts[1]
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	rep := service.OfflineCheckWorktree(ctx, dir, base, lib, owner, repoName, *pr)
 
