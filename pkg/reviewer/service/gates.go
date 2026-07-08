@@ -36,7 +36,11 @@ var (
 	// an explicit layer inherits the top-of-everything default (measured: the
 	// one layerless overlay addition across 38 real PRs was the production
 	// stacking bug; every clean addition passed layer= explicitly).
-	gateOverlayOpen  = regexp.MustCompile(`(?m)^\+.*<(RichTooltip|Portal)\b`)
+	// Matches the class signature — any JSX component named *Portal and direct
+	// createPortal( calls — not one component's spelling: an overlay built on
+	// raw createPortal shipped the same invisible/mis-stacked bug class the
+	// narrow pattern missed.
+	gateOverlayOpen  = regexp.MustCompile(`(?m)^\+.*(<(RichTooltip|[A-Za-z]\w*Portal|Portal)\b|\bcreatePortal\s*\()`)
 	gateOverlayLayer = regexp.MustCompile(`(?m)^\+.*\blayer\s*[=:]`)
 
 	// New properties on Django models change behavior/exception contracts for
@@ -99,12 +103,12 @@ func RunMechanicalGates(ctx context.Context, dir string, files []diffFile) []typ
 		}
 
 		// portal-layer: overlay component added without an explicit layer.
-		if strings.HasSuffix(f.Path, ".tsx") || strings.HasSuffix(f.Path, ".jsx") {
+		if strings.HasSuffix(f.Path, ".tsx") || strings.HasSuffix(f.Path, ".jsx") || strings.HasSuffix(f.Path, ".ts") {
 			joined := "+" + strings.Join(f.Added, "\n+")
 			if gateOverlayOpen.MatchString(joined) && !gateOverlayLayer.MatchString(joined) {
 				out = append(out, types.LineComment{
 					FilePath: f.Path, LineNumber: 0, Importance: "MEDIUM",
-					CommentBody: "**Mechanical alert — overlay without an explicit layer.** This change renders a portal-based overlay (RichTooltip/Portal) without a `layer` prop, inheriting the default top-of-stack layer. Persistent overlays on the default layer render above modals and other UI. State the intended stacking layer explicitly and verify against the portal layer registry.",
+					CommentBody: "**Mechanical alert — portal overlay without an explicit layer.** This change renders portal-based UI (a *Portal component or createPortal call) without a `layer` prop. Portaled content escapes its parent's stacking and visibility context: on the default layer it renders above modals, and under browser fullscreen only descendants of the fullscreen element are visible at all. State the intended stacking layer explicitly, and verify the portal target is correct for fullscreen contexts.",
 				})
 			}
 		}

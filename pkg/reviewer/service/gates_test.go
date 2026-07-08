@@ -174,3 +174,32 @@ func TestGates_ModelProperty(t *testing.T) {
 		t.Errorf("test files should not alert: %+v", got)
 	}
 }
+
+func TestGates_PortalLayer_ClassWide(t *testing.T) {
+	dir := gateFixtureRepo(t)
+	// createPortal without layer -> alert (including plain .ts).
+	files := []diffFile{{Path: "app/preview.ts", Status: "modified",
+		Added: []string{"    return createPortal(content, document.body)"}}}
+	got := RunMechanicalGates(context.Background(), dir, files)
+	if len(got) != 1 || !strings.Contains(got[0].CommentBody, "portal overlay") {
+		t.Fatalf("want createPortal alert, got %+v", got)
+	}
+	// Any *Portal component -> alert.
+	files[0] = diffFile{Path: "app/Media.tsx", Status: "modified",
+		Added: []string{"        <FullscreenMediaPortal media={m} />"}}
+	if got := RunMechanicalGates(context.Background(), dir, files); len(got) != 1 {
+		t.Fatalf("want *Portal component alert, got %+v", got)
+	}
+	// createPortal alongside an explicit layer -> silent.
+	files[0] = diffFile{Path: "app/preview.ts", Status: "modified",
+		Added: []string{"    return createPortal(content, target)", "    layer={overlayLayer}"}}
+	if got := RunMechanicalGates(context.Background(), dir, files); len(got) != 0 {
+		t.Errorf("explicit layer should suppress: %+v", got)
+	}
+	// Identifier merely containing the substring -> silent.
+	files[0] = diffFile{Path: "app/util.ts", Status: "modified",
+		Added: []string{"    const recreatePortalCount = 3"}}
+	if got := RunMechanicalGates(context.Background(), dir, files); len(got) != 0 {
+		t.Errorf("substring identifier should not alert: %+v", got)
+	}
+}
