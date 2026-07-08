@@ -35,9 +35,10 @@ type BugMemoryEntry struct {
 
 // BugMemoryMatch is the observable result of matching, kept for telemetry.
 type BugMemoryMatch struct {
-	Version  string   `json:"version"`
-	Matched  []string `json:"matched"`          // entry ids injected, post-cap
-	Excluded []string `json:"excluded_leakage"` // entry ids excluded by the source-PR rule
+	Version    string   `json:"version"`
+	Matched    []string `json:"matched"`              // entry ids injected, post-cap
+	Candidates []string `json:"candidates,omitempty"` // entry ids that triggered, pre-cap
+	Excluded   []string `json:"excluded_leakage"`     // entry ids excluded by the source-PR rule
 }
 
 // BugMemoryLibrary is the parsed library plus its version marker.
@@ -147,6 +148,7 @@ func MatchBugMemory(lib *BugMemoryLibrary, files []diffFile, owner, repo string,
 		}
 		if hits > 0 {
 			candidates = append(candidates, scored{e, hits})
+			res.Candidates = append(res.Candidates, e.ID)
 		}
 	}
 

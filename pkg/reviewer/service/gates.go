@@ -269,6 +269,31 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch string) []diff
 	return files
 }
 
+// OfflineWorktreeReport is the deterministic-signal report for one worktree:
+// what the gates and the bug-memory matcher would contribute to a review of
+// this diff. Used by cmd/gatecheck for offline validation sweeps.
+type OfflineWorktreeReport struct {
+	DiffParsed bool                `json:"diff_parsed"` // false = parse error or pathological diff (distinct from "quiet")
+	Files      int                 `json:"files"`
+	Gates      []types.LineComment `json:"gates"`
+	BugMemory  BugMemoryMatch      `json:"bug_memory"`
+}
+
+// OfflineCheckWorktree runs gates + bug-memory matching against a checked-out
+// worktree exactly as production would (same diff parse, same matchers).
+func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *BugMemoryLibrary, owner, repo string, prNumber int) OfflineWorktreeReport {
+	rep := OfflineWorktreeReport{}
+	files := diffFilesForWorktree(ctx, dir, defaultBranch)
+	if files == nil {
+		return rep
+	}
+	rep.DiffParsed = true
+	rep.Files = len(files)
+	rep.Gates = RunMechanicalGates(ctx, dir, files)
+	_, rep.BugMemory = MatchBugMemory(lib, files, owner, repo, prNumber)
+	return rep
+}
+
 // GatesForWorktree diffs the worktree and runs all gates. Best-effort — on
 // any error it returns nil findings (gates are advisory; they must never
 // fail a review).
