@@ -245,7 +245,7 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 // Best-effort — on any error (or a pathological >20k-added-lines diff) it
 // returns nil, which downstream consumers (gates, bug memory) treat as
 // "no signal", never as a review failure.
-func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLockKey string) []diffFile {
+func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLockKey string, prNumber int) []diffFile {
 	if dir == "" {
 		return nil
 	}
@@ -271,9 +271,24 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLo
 				m.Lock()
 				defer m.Unlock()
 			}
-			deepenArgs := authHeaderArgs(token)
-			deepenArgs = append(deepenArgs, "fetch", "--quiet", "--deepen=4000", "origin")
-			out, derr := runGit(ctx, dir, deepenArgs...)
+			// A bounded deepen cannot reconnect an old PR: the PR-head ref
+			// is itself fetched shallow, so its ancestry is severed from
+			// the base branch regardless of how deep the base goes. Fetch
+			// the PR ref with --unshallow, which completes both sides of
+			// the graph until they connect. One-time cost per cache repo.
+			args := authHeaderArgs(token)
+			args = append(args, "fetch", "--quiet", "--unshallow", "origin")
+			if prNumber > 0 {
+				args = append(args, fmt.Sprintf("+pull/%d/head:refs/agent-pr/%d", prNumber, prNumber))
+			}
+			out, derr := runGit(ctx, dir, args...)
+			if derr != nil && strings.Contains(out, "does not make sense") {
+				// Already unshallow: refetch just the PR ref to connect it.
+				args = authHeaderArgs(token)
+				args = append(args, "fetch", "--quiet", "origin",
+					fmt.Sprintf("+pull/%d/head:refs/agent-pr/%d", prNumber, prNumber))
+				out, derr = runGit(ctx, dir, args...)
+			}
 			if derr != nil {
 				return fmt.Errorf("%v (%s)", derr, redactToken(out, token))
 			}
@@ -314,7 +329,7 @@ type OfflineWorktreeReport struct {
 // worktree exactly as production would (same diff parse, same matchers).
 func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *BugMemoryLibrary, owner, repo string, prNumber int) OfflineWorktreeReport {
 	rep := OfflineWorktreeReport{}
-	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "")
+	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", prNumber)
 	if files == nil {
 		return rep
 	}
@@ -329,7 +344,7 @@ func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *B
 // any error it returns nil findings (gates are advisory; they must never
 // fail a review).
 func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
-	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "")
+	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", 0)
 	if files == nil {
 		return nil
 	}
