@@ -46,6 +46,8 @@ type Config struct {
 	AgentMaxConcurrent int    // <=0 disables the cap (unlimited concurrency)
 	AgentModel         string // `claude` model id for agent reviews (empty = service default)
 	AgentEffort        string // `claude` reasoning effort for agent reviews (empty = service default)
+	BugMemoryPath      string // local path to a bug-memory library JSON (dev/benchmark)
+	BugMemoryObject    string // GCS object name of the library (prod); Path wins if both set
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -118,6 +120,8 @@ func Load() *Config {
 		AgentMaxConcurrent: getEnvIntOrDefault("AGENT_MAX_CONCURRENT", 2),
 		AgentModel:         os.Getenv("AGENT_MODEL"),
 		AgentEffort:        os.Getenv("AGENT_EFFORT"),
+		BugMemoryPath:      os.Getenv("BUG_MEMORY_PATH"),
+		BugMemoryObject:    os.Getenv("BUG_MEMORY_OBJECT"),
 	}
 }
 

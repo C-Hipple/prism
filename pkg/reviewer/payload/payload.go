@@ -38,6 +38,18 @@ type Payload struct {
 
 	Counts   Counts    `json:"counts"`
 	Findings []Finding `json:"findings"`
+
+	// BugMemory is present when the bug-memory feature injected (or excluded)
+	// pattern-library entries for this review; consumers use it to attribute
+	// findings to injected priors.
+	BugMemory *BugMemoryInfo `json:"bug_memory,omitempty"`
+}
+
+// BugMemoryInfo mirrors the service-layer match telemetry without importing it.
+type BugMemoryInfo struct {
+	Version         string   `json:"version"`
+	Matched         []string `json:"matched"`
+	ExcludedLeakage []string `json:"excluded_leakage,omitempty"`
 }
 
 // Counts is the per-severity tally. Mirrors the columns on the PR row.

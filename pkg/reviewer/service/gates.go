@@ -49,11 +49,13 @@ var (
 	gateModelProperty = regexp.MustCompile(`(?m)^\+\s*@(cached_)?property\b`)
 )
 
-// diffFile is one changed file: its path and the diff's added lines.
+// diffFile is one changed file: its path and the diff's added/removed lines.
 type diffFile struct {
-	Path   string
-	Added  []string // lines added by the PR (no leading '+')
-	Status string   // "modified", "added", "removed"
+	Path    string
+	Added   []string // lines added by the PR (no leading '+')
+	Removed []string // lines removed by the PR (no leading '-') — omission
+	// bugs live in removals, so bug-memory keyword matching needs them.
+	Status string // "modified", "added", "removed"
 }
 
 // RunMechanicalGates evaluates all gates and returns provenance-ready findings
@@ -210,28 +212,39 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 		return nil, fmt.Errorf("unified diff: %w", err)
 	}
 	added := map[string][]string{}
+	removed := map[string][]string{}
 	cur := ""
 	for _, line := range strings.Split(full, "\n") {
+		if strings.HasPrefix(line, "diff --git ") {
+			cur = "" // reset so a deleted file's hunks don't attach to the previous file
+			continue
+		}
 		if strings.HasPrefix(line, "+++ b/") {
 			cur = strings.TrimPrefix(line, "+++ b/")
 			continue
 		}
-		if cur != "" && strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+		if cur == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
 			added[cur] = append(added[cur], line[1:])
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			removed[cur] = append(removed[cur], line[1:])
 		}
 	}
 
 	var files []diffFile
 	for _, p := range order {
-		files = append(files, diffFile{Path: p, Added: added[p], Status: status[p]})
+		files = append(files, diffFile{Path: p, Added: added[p], Removed: removed[p], Status: status[p]})
 	}
 	return files, nil
 }
 
-// GatesForWorktree is the production entry point: diff the worktree against
-// origin/<defaultBranch> and run all gates. Best-effort — on any error it
-// returns nil findings (gates are advisory; they must never fail a review).
-func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
+// diffFilesForWorktree parses the PR's diff against origin/<defaultBranch>.
+// Best-effort — on any error (or a pathological >20k-added-lines diff) it
+// returns nil, which downstream consumers (gates, bug memory) treat as
+// "no signal", never as a review failure.
+func diffFilesForWorktree(ctx context.Context, dir, defaultBranch string) []diffFile {
 	if dir == "" {
 		return nil
 	}
@@ -245,12 +258,23 @@ func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.Li
 	if err != nil {
 		return nil
 	}
-	// Guard pathological diffs: gates are per-added-line regex scans.
+	// Guard pathological diffs: gates and memory are per-line regex scans.
 	total := 0
 	for _, f := range files {
 		total += len(f.Added)
 	}
 	if total > 20000 {
+		return nil
+	}
+	return files
+}
+
+// GatesForWorktree diffs the worktree and runs all gates. Best-effort — on
+// any error it returns nil findings (gates are advisory; they must never
+// fail a review).
+func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
+	files := diffFilesForWorktree(ctx, dir, defaultBranch)
+	if files == nil {
 		return nil
 	}
 	return RunMechanicalGates(ctx, dir, files)

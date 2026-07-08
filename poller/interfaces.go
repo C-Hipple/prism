@@ -6,6 +6,7 @@ import (
 	gh "github.com/google/go-github/v57/github"
 
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/reviewer/types"
 )
 
@@ -93,6 +94,11 @@ type ReviewResult struct {
 	Comments     []types.LineComment
 	Diff         string
 	FileContents map[string]string
+
+	// BugMemory records which pattern-library entries were injected into the
+	// agent prompt (and which were excluded by the leave-one-out rule) so the
+	// sidecar can attribute catches. Zero value when the feature is off.
+	BugMemory service.BugMemoryMatch
 }
 
 // ReviewGeneratorConfig contains configuration for generating a review
