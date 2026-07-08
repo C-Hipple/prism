@@ -129,3 +129,48 @@ func TestGates_BestEffortOnBadWorktree(t *testing.T) {
 		t.Errorf("want nil on empty args, got %+v", got)
 	}
 }
+
+func TestGates_PortalLayer(t *testing.T) {
+	dir := gateFixtureRepo(t)
+	// Layerless overlay -> alert.
+	files := []diffFile{{Path: "app/Tooltip.tsx", Status: "modified",
+		Added: []string{"        <RichTooltip", "            isOpen={true}"}}}
+	got := RunMechanicalGates(context.Background(), dir, files)
+	if len(got) != 1 || !strings.Contains(got[0].CommentBody, "overlay without an explicit layer") {
+		t.Fatalf("want 1 portal-layer alert, got %+v", got)
+	}
+	// Explicit layer -> silent.
+	files[0].Added = []string{"    return <Portal layer={portalLayer}>{content}</Portal>"}
+	if got := RunMechanicalGates(context.Background(), dir, files); len(got) != 0 {
+		t.Errorf("explicit layer should not alert: %+v", got)
+	}
+	// Non-jsx file -> silent.
+	files[0].Path = "app/notes.md"
+	files[0].Added = []string{"<RichTooltip"}
+	if got := RunMechanicalGates(context.Background(), dir, files); len(got) != 0 {
+		t.Errorf("non-jsx should not alert: %+v", got)
+	}
+}
+
+func TestGates_ModelProperty(t *testing.T) {
+	dir := gateFixtureRepo(t)
+	files := []diffFile{{Path: "tipping/models.py", Status: "modified",
+		Added: []string{"    @cached_property", "    def wanted(self):"}}}
+	got := RunMechanicalGates(context.Background(), dir, files)
+	if len(got) != 1 || !strings.Contains(got[0].CommentBody, "new model property") {
+		t.Fatalf("want 1 model-property alert, got %+v", got)
+	}
+	// Plain @property also fires; non-models.py and tests do not.
+	files[0].Added = []string{"    @property", "    def x(self):"}
+	if got := RunMechanicalGates(context.Background(), dir, files); len(got) != 1 {
+		t.Errorf("@property should alert: %+v", got)
+	}
+	files[0].Path = "tipping/views.py"
+	if got := RunMechanicalGates(context.Background(), dir, files); len(got) != 0 {
+		t.Errorf("non-models.py should not alert: %+v", got)
+	}
+	files[0].Path = "tipping/tests/models.py"
+	if got := RunMechanicalGates(context.Background(), dir, files); len(got) != 0 {
+		t.Errorf("test files should not alert: %+v", got)
+	}
+}

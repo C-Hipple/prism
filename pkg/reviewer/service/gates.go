@@ -31,6 +31,18 @@ var (
 	// class under GATE_TOPIC_FE_DIR. Both unset => the gate is disabled.
 	gateTopicBEDir = os.Getenv("GATE_TOPIC_BE_DIR")
 	gateTopicFEDir = os.Getenv("GATE_TOPIC_FE_DIR")
+
+	// Overlay components that portal to a stacking layer; using them without
+	// an explicit layer inherits the top-of-everything default (measured: the
+	// one layerless overlay addition across 38 real PRs was the production
+	// stacking bug; every clean addition passed layer= explicitly).
+	gateOverlayOpen  = regexp.MustCompile(`(?m)^\+.*<(RichTooltip|Portal)\b`)
+	gateOverlayLayer = regexp.MustCompile(`(?m)^\+.*\blayer\s*[=:]`)
+
+	// New properties on Django models change behavior/exception contracts for
+	// every consumer and subclass (measured: 2 of 2 additions across 38 real
+	// PRs were culprit PRs; zero on known-good PRs).
+	gateModelProperty = regexp.MustCompile(`(?m)^\+\s*@(cached_)?property\b`)
 )
 
 // diffFile is one changed file: its path and the diff's added lines.
@@ -83,6 +95,28 @@ func RunMechanicalGates(ctx context.Context, dir string, files []diffFile) []typ
 						})
 					}
 				}
+			}
+		}
+
+		// portal-layer: overlay component added without an explicit layer.
+		if strings.HasSuffix(f.Path, ".tsx") || strings.HasSuffix(f.Path, ".jsx") {
+			joined := "+" + strings.Join(f.Added, "\n+")
+			if gateOverlayOpen.MatchString(joined) && !gateOverlayLayer.MatchString(joined) {
+				out = append(out, types.LineComment{
+					FilePath: f.Path, LineNumber: 0, Importance: "MEDIUM",
+					CommentBody: "**Mechanical alert — overlay without an explicit layer.** This change renders a portal-based overlay (RichTooltip/Portal) without a `layer` prop, inheriting the default top-of-stack layer. Persistent overlays on the default layer render above modals and other UI. State the intended stacking layer explicitly and verify against the portal layer registry.",
+				})
+			}
+		}
+
+		// model-property: new property on a Django model.
+		if strings.HasSuffix(f.Path, "models.py") && !strings.Contains(lower, "test") {
+			joined := "+" + strings.Join(f.Added, "\n+")
+			if gateModelProperty.MatchString(joined) {
+				out = append(out, types.LineComment{
+					FilePath: f.Path, LineNumber: 0, Importance: "MEDIUM",
+					CommentBody: "**Mechanical alert — new model property.** This change adds a property to a Django model. Properties on shared models define behavior and exception contracts for every consumer and subclass: verify what it returns or raises for each subclass, and whether existing hasattr/getattr call sites remain correct.",
+				})
 			}
 		}
 
