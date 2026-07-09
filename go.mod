@@ -7,6 +7,7 @@ toolchain go1.25.8
 require (
 	cloud.google.com/go/storage v1.59.2
 	github.com/anthropics/anthropic-sdk-go v1.19.0
+	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/fatih/color v1.18.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/gomarkdown/markdown v0.0.0-20250810172220-2e2c11897d1a
@@ -38,7 +39,6 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.54.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.54.0 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
-	github.com/bmatcuk/doublestar/v4 v4.10.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20251022180443-0feb69152e9f // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
