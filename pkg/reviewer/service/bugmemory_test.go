@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func mkEntry(id, class, pattern string, paths, kws []string, prs ...int) BugMemoryEntry {
@@ -142,5 +143,33 @@ func TestBuildAgentPromptContent_MemorySection(t *testing.T) {
 		!strings.Contains(withMem, "dropped ids in context menus") ||
 		!strings.Contains(withMem, "priors to check, not findings to report") {
 		t.Errorf("memory section missing pieces:\n%s", withMem)
+	}
+}
+
+func TestLoadBugMemory_InvalidGlobDropped(t *testing.T) {
+	data := []byte(`{"version":"v0","entries":[
+		{"id":"bad-glob","source_repo":"acme/example","source_prs":[1],"class":"c","pattern":"p","trigger_paths":["src/[oops"]},
+		{"id":"good","source_repo":"acme/example","source_prs":[2],"class":"c","pattern":"p","trigger_paths":["src/**"]}
+	]}`)
+	lib, dropped, err := LoadBugMemory(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lib.Entries) != 1 || lib.Entries[0].ID != "good" {
+		t.Fatalf("want only 'good' kept, got %+v", lib.Entries)
+	}
+	if len(dropped) != 1 || !strings.Contains(dropped[0], "invalid trigger path glob") {
+		t.Errorf("want invalid-glob drop reason, got %v", dropped)
+	}
+}
+
+func TestSanitizePattern_RuneBoundary(t *testing.T) {
+	p := strings.Repeat("x", bugMemoryPatternMax-1) + "héllo"
+	got := sanitizePattern(p)
+	if len(got) > bugMemoryPatternMax {
+		t.Fatalf("not truncated: %d bytes", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("truncation produced invalid UTF-8: %q", got[len(got)-4:])
 	}
 }

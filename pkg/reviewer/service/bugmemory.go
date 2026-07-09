@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/bmatcuk/doublestar/v4"
 )
@@ -71,6 +72,9 @@ func LoadBugMemory(data []byte) (*BugMemoryLibrary, []string, error) {
 			dropped = append(dropped, e.ID+": empty pattern")
 		case len(e.TriggerPaths) == 0 && len(e.TriggerKeywords) == 0:
 			dropped = append(dropped, e.ID+": no triggers")
+		case firstBadGlob(e.TriggerPaths) != "":
+			// A typo'd glob would otherwise never match and never tell anyone.
+			dropped = append(dropped, e.ID+": invalid trigger path glob "+firstBadGlob(e.TriggerPaths))
 		default:
 			e.Pattern = sanitizePattern(e.Pattern)
 			kept = append(kept, e)
@@ -87,9 +91,23 @@ func sanitizePattern(p string) string {
 	p = strings.ReplaceAll(p, "```", "'''")
 	p = strings.Join(strings.Fields(p), " ")
 	if len(p) > bugMemoryPatternMax {
-		p = p[:bugMemoryPatternMax]
+		cut := bugMemoryPatternMax
+		for cut > 0 && !utf8.RuneStart(p[cut]) {
+			cut-- // never split a multi-byte rune into invalid UTF-8
+		}
+		p = p[:cut]
 	}
 	return p
+}
+
+// firstBadGlob returns the first invalid doublestar pattern, or "".
+func firstBadGlob(globs []string) string {
+	for _, g := range globs {
+		if !doublestar.ValidatePattern(g) {
+			return g
+		}
+	}
+	return ""
 }
 
 // MatchBugMemory selects the entries relevant to this PR's diff.

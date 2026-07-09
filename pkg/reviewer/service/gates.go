@@ -217,7 +217,15 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 	cur := ""
 	for _, line := range strings.Split(full, "\n") {
 		if strings.HasPrefix(line, "diff --git ") {
-			cur = "" // reset so a deleted file's hunks don't attach to the previous file
+			cur = "" // reset so one file's hunks don't attach to the previous file
+			continue
+		}
+		// A deleted file has `--- a/<path>` / `+++ /dev/null`, so the old-side
+		// path is the only name it carries. Whole-file deletion is the
+		// strongest omission signal there is — those removed lines must feed
+		// the matchers. For modified files the `+++ b/` line overwrites this.
+		if strings.HasPrefix(line, "--- a/") {
+			cur = strings.TrimPrefix(line, "--- a/")
 			continue
 		}
 		if strings.HasPrefix(line, "+++ b/") {
@@ -282,7 +290,7 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLo
 				args = append(args, fmt.Sprintf("+pull/%d/head:refs/agent-pr/%d", prNumber, prNumber))
 			}
 			out, derr := runGit(ctx, dir, args...)
-			if derr != nil && strings.Contains(out, "does not make sense") {
+			if derr != nil && prNumber > 0 && strings.Contains(out, "does not make sense") {
 				// Already unshallow: refetch just the PR ref to connect it.
 				args = authHeaderArgs(token)
 				args = append(args, "fetch", "--quiet", "origin",
@@ -307,7 +315,7 @@ func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLo
 	// Guard pathological diffs: gates and memory are per-line regex scans.
 	total := 0
 	for _, f := range files {
-		total += len(f.Added)
+		total += len(f.Added) + len(f.Removed)
 	}
 	if total > 20000 {
 		return nil

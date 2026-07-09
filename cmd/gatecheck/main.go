@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	gatecheck <worktree-dir> <base-ref> [--bug-memory file.json --repo owner/repo --pr N]
+//	gatecheck <worktree-dir> <base-branch> [--bug-memory file.json --repo owner/repo --pr N]
 //
 // Output: one JSON OfflineWorktreeReport on stdout. A diff that failed to
 // parse reports {"diff_parsed": false, ...} — distinct from a quiet diff.
@@ -31,7 +31,7 @@ func main() {
 
 	args := os.Args[1:]
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gatecheck <worktree-dir> <base-ref> [--bug-memory file.json --repo owner/repo --pr N]")
+		fmt.Fprintln(os.Stderr, "usage: gatecheck <worktree-dir> <base-branch> [--bug-memory file.json --repo owner/repo --pr N]")
 		os.Exit(2)
 	}
 	dir, base := args[0], args[1]
