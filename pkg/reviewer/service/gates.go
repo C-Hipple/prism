@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -36,7 +37,11 @@ var (
 	// an explicit layer inherits the top-of-everything default (measured: the
 	// one layerless overlay addition across 38 real PRs was the production
 	// stacking bug; every clean addition passed layer= explicitly).
-	gateOverlayOpen  = regexp.MustCompile(`(?m)^\+.*<(RichTooltip|Portal)\b`)
+	// Matches the class signature — any JSX component named *Portal and direct
+	// createPortal( calls — not one component's spelling: an overlay built on
+	// raw createPortal shipped the same invisible/mis-stacked bug class the
+	// narrow pattern missed.
+	gateOverlayOpen  = regexp.MustCompile(`(?m)^\+.*(<(RichTooltip|[A-Za-z]\w*Portal|Portal)\b|\bcreatePortal\s*\()`)
 	gateOverlayLayer = regexp.MustCompile(`(?m)^\+.*\blayer\s*[=:]`)
 
 	// New properties on Django models change behavior/exception contracts for
@@ -45,11 +50,13 @@ var (
 	gateModelProperty = regexp.MustCompile(`(?m)^\+\s*@(cached_)?property\b`)
 )
 
-// diffFile is one changed file: its path and the diff's added lines.
+// diffFile is one changed file: its path and the diff's added/removed lines.
 type diffFile struct {
-	Path   string
-	Added  []string // lines added by the PR (no leading '+')
-	Status string   // "modified", "added", "removed"
+	Path    string
+	Added   []string // lines added by the PR (no leading '+')
+	Removed []string // lines removed by the PR (no leading '-') — omission
+	// bugs live in removals, so bug-memory keyword matching needs them.
+	Status string // "modified", "added", "removed"
 }
 
 // RunMechanicalGates evaluates all gates and returns provenance-ready findings
@@ -99,12 +106,12 @@ func RunMechanicalGates(ctx context.Context, dir string, files []diffFile) []typ
 		}
 
 		// portal-layer: overlay component added without an explicit layer.
-		if strings.HasSuffix(f.Path, ".tsx") || strings.HasSuffix(f.Path, ".jsx") {
+		if strings.HasSuffix(f.Path, ".tsx") || strings.HasSuffix(f.Path, ".jsx") || strings.HasSuffix(f.Path, ".ts") {
 			joined := "+" + strings.Join(f.Added, "\n+")
 			if gateOverlayOpen.MatchString(joined) && !gateOverlayLayer.MatchString(joined) {
 				out = append(out, types.LineComment{
 					FilePath: f.Path, LineNumber: 0, Importance: "MEDIUM",
-					CommentBody: "**Mechanical alert — overlay without an explicit layer.** This change renders a portal-based overlay (RichTooltip/Portal) without a `layer` prop, inheriting the default top-of-stack layer. Persistent overlays on the default layer render above modals and other UI. State the intended stacking layer explicitly and verify against the portal layer registry.",
+					CommentBody: "**Mechanical alert — portal overlay without an explicit layer.** This change renders portal-based UI (a *Portal component or createPortal call) without a `layer` prop. Portaled content escapes its parent's stacking and visibility context: on the default layer it renders above modals, and under browser fullscreen only descendants of the fullscreen element are visible at all. State the intended stacking layer explicitly, and verify the portal target is correct for fullscreen contexts.",
 				})
 			}
 		}
@@ -206,28 +213,47 @@ func parseNameStatusDiff(ctx context.Context, dir, base string) ([]diffFile, err
 		return nil, fmt.Errorf("unified diff: %w", err)
 	}
 	added := map[string][]string{}
+	removed := map[string][]string{}
 	cur := ""
 	for _, line := range strings.Split(full, "\n") {
+		if strings.HasPrefix(line, "diff --git ") {
+			cur = "" // reset so one file's hunks don't attach to the previous file
+			continue
+		}
+		// A deleted file has `--- a/<path>` / `+++ /dev/null`, so the old-side
+		// path is the only name it carries. Whole-file deletion is the
+		// strongest omission signal there is — those removed lines must feed
+		// the matchers. For modified files the `+++ b/` line overwrites this.
+		if strings.HasPrefix(line, "--- a/") {
+			cur = strings.TrimPrefix(line, "--- a/")
+			continue
+		}
 		if strings.HasPrefix(line, "+++ b/") {
 			cur = strings.TrimPrefix(line, "+++ b/")
 			continue
 		}
-		if cur != "" && strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+		if cur == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
 			added[cur] = append(added[cur], line[1:])
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			removed[cur] = append(removed[cur], line[1:])
 		}
 	}
 
 	var files []diffFile
 	for _, p := range order {
-		files = append(files, diffFile{Path: p, Added: added[p], Status: status[p]})
+		files = append(files, diffFile{Path: p, Added: added[p], Removed: removed[p], Status: status[p]})
 	}
 	return files, nil
 }
 
-// GatesForWorktree is the production entry point: diff the worktree against
-// origin/<defaultBranch> and run all gates. Best-effort — on any error it
-// returns nil findings (gates are advisory; they must never fail a review).
-func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
+// diffFilesForWorktree parses the PR's diff against origin/<defaultBranch>.
+// Best-effort — on any error (or a pathological >20k-added-lines diff) it
+// returns nil, which downstream consumers (gates, bug memory) treat as
+// "no signal", never as a review failure.
+func diffFilesForWorktree(ctx context.Context, dir, defaultBranch, token, repoLockKey string, prNumber int) []diffFile {
 	if dir == "" {
 		return nil
 	}
@@ -239,14 +265,95 @@ func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.Li
 	}
 	files, err := parseNameStatusDiff(ctx, dir, base)
 	if err != nil {
-		return nil
+		// The usual cause: a shallow clone (prod uses --depth 200) has no
+		// merge-base for the three-dot diff. Fresh PRs fit the window; old
+		// PRs (replays, benchmarks) do not. Deepen once and retry rather
+		// than silently reporting "no signal".
+		log.Printf("[GATES] diff vs %s failed (%v) — deepening history and retrying", base, err)
+		// Deepening writes the shared repo's shallow file; concurrent cache
+		// fetches for the same repo fail on shallow.lock instead of waiting,
+		// so hold the same per-repo mutex cloneForAgent uses for cache work.
+		deepen := func() error {
+			if repoLockKey != "" {
+				m := cacheLock(repoLockKey)
+				m.Lock()
+				defer m.Unlock()
+			}
+			// A bounded deepen cannot reconnect an old PR: the PR-head ref
+			// is itself fetched shallow, so its ancestry is severed from
+			// the base branch regardless of how deep the base goes. Fetch
+			// the PR ref with --unshallow, which completes both sides of
+			// the graph until they connect. One-time cost per cache repo.
+			args := authHeaderArgs(token)
+			args = append(args, "fetch", "--quiet", "--unshallow", "origin")
+			if prNumber > 0 {
+				args = append(args, fmt.Sprintf("+pull/%d/head:refs/agent-pr/%d", prNumber, prNumber))
+			}
+			out, derr := runGit(ctx, dir, args...)
+			if derr != nil && prNumber > 0 && strings.Contains(out, "does not make sense") {
+				// Already unshallow: refetch just the PR ref to connect it.
+				args = authHeaderArgs(token)
+				args = append(args, "fetch", "--quiet", "origin",
+					fmt.Sprintf("+pull/%d/head:refs/agent-pr/%d", prNumber, prNumber))
+				out, derr = runGit(ctx, dir, args...)
+			}
+			if derr != nil {
+				return fmt.Errorf("%v (%s)", derr, redactToken(out, token))
+			}
+			return nil
+		}
+		if derr := deepen(); derr != nil {
+			log.Printf("[GATES] deepen failed: %v — no deterministic signals for this review", derr)
+			return nil
+		}
+		files, err = parseNameStatusDiff(ctx, dir, base)
+		if err != nil {
+			log.Printf("[GATES] diff still failing after deepen: %v — no deterministic signals for this review", err)
+			return nil
+		}
 	}
-	// Guard pathological diffs: gates are per-added-line regex scans.
+	// Guard pathological diffs: gates and memory are per-line regex scans.
 	total := 0
 	for _, f := range files {
-		total += len(f.Added)
+		total += len(f.Added) + len(f.Removed)
 	}
 	if total > 20000 {
+		return nil
+	}
+	return files
+}
+
+// OfflineWorktreeReport is the deterministic-signal report for one worktree:
+// what the gates and the bug-memory matcher would contribute to a review of
+// this diff. Used by cmd/gatecheck for offline validation sweeps.
+type OfflineWorktreeReport struct {
+	DiffParsed bool                `json:"diff_parsed"` // false = parse error or pathological diff (distinct from "quiet")
+	Files      int                 `json:"files"`
+	Gates      []types.LineComment `json:"gates"`
+	BugMemory  BugMemoryMatch      `json:"bug_memory"`
+}
+
+// OfflineCheckWorktree runs gates + bug-memory matching against a checked-out
+// worktree exactly as production would (same diff parse, same matchers).
+func OfflineCheckWorktree(ctx context.Context, dir, defaultBranch string, lib *BugMemoryLibrary, owner, repo string, prNumber int) OfflineWorktreeReport {
+	rep := OfflineWorktreeReport{}
+	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", prNumber)
+	if files == nil {
+		return rep
+	}
+	rep.DiffParsed = true
+	rep.Files = len(files)
+	rep.Gates = RunMechanicalGates(ctx, dir, files)
+	_, rep.BugMemory = MatchBugMemory(lib, files, owner, repo, prNumber)
+	return rep
+}
+
+// GatesForWorktree diffs the worktree and runs all gates. Best-effort — on
+// any error it returns nil findings (gates are advisory; they must never
+// fail a review).
+func GatesForWorktree(ctx context.Context, dir, defaultBranch string) []types.LineComment {
+	files := diffFilesForWorktree(ctx, dir, defaultBranch, "", "", 0)
+	if files == nil {
 		return nil
 	}
 	return RunMechanicalGates(ctx, dir, files)

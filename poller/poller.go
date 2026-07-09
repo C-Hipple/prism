@@ -74,9 +74,10 @@ type Poller struct {
 	ghClient         GitHubClient
 	ghClientConcrete *github.Client // Concrete client for reviewer service (which uses a different interface)
 	gcsClient        *gcs.Client
-	storage          ReviewStorage   // Optional: for testing. If nil, uses gcsClient/local storage
-	reviewGenerator  ReviewGenerator // Optional: for testing. If nil, uses real reviewer service
-	reviewDir        string          // Local storage path (used when GCS is not configured)
+	bugMemory        *service.BugMemoryLibrary // nil = feature off
+	storage          ReviewStorage             // Optional: for testing. If nil, uses gcsClient/local storage
+	reviewGenerator  ReviewGenerator           // Optional: for testing. If nil, uses real reviewer service
+	reviewDir        string                    // Local storage path (used when GCS is not configured)
 	cacheUpdateFunc  func([]github.PullRequest)
 	EventFunc        func(eventType string, payload interface{})
 	StatusEventFunc  func()
@@ -209,7 +210,49 @@ func New(cfg *config.Config, database db.Database, ghClient *github.Client, gcsC
 	if cfg.AgentMaxConcurrent > 0 {
 		p.agentSlots = make(chan struct{}, cfg.AgentMaxConcurrent)
 	}
+	p.loadBugMemory()
 	return p
+}
+
+// loadBugMemory loads the optional pattern library at startup. Fail-open by
+// design: a missing env is feature-off with an info log; a set-but-broken
+// source is an error log and feature-off — never a failed boot or review.
+// Benchmark arms that REQUIRE memory verify the startup log line instead.
+func (p *Poller) loadBugMemory() {
+	var data []byte
+	var src string
+	switch {
+	case p.cfg.BugMemoryPath != "":
+		src = p.cfg.BugMemoryPath
+		b, err := os.ReadFile(p.cfg.BugMemoryPath)
+		if err != nil {
+			log.Printf("[BUGMEM] ERROR: read %s: %v — bug memory OFF", src, err)
+			return
+		}
+		data = b
+	case p.cfg.BugMemoryObject != "" && p.gcsClient != nil:
+		src = "gs://" + p.gcsClient.BucketName() + "/" + p.cfg.BugMemoryObject
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		b, err := p.gcsClient.GetReviewContent(ctx, p.cfg.BugMemoryObject)
+		if err != nil {
+			log.Printf("[BUGMEM] ERROR: fetch %s: %v — bug memory OFF", src, err)
+			return
+		}
+		data = b
+	default:
+		return // feature off
+	}
+	lib, dropped, err := service.LoadBugMemory(data)
+	if err != nil {
+		log.Printf("[BUGMEM] ERROR: parse %s: %v — bug memory OFF", src, err)
+		return
+	}
+	for _, d := range dropped {
+		log.Printf("[BUGMEM] WARN: dropped entry: %s", d)
+	}
+	p.bugMemory = lib
+	log.Printf("[BUGMEM] loaded %d entries (version %s) from %s", len(lib.Entries), lib.Version, src)
 }
 
 // SetAgentSpawner overrides the subprocess spawner used for agent reviews.
@@ -268,6 +311,7 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		GitHubToken:  gitToken,
 		Model:        p.cfg.AgentModel,
 		Effort:       p.cfg.AgentEffort,
+		BugMemory:    p.bugMemory,
 	}
 	agentOut, agentErr := service.RunAgentReview(ctx, agentCfg, p.agentSpawner,
 		pr.Owner, pr.Repo, "", pr.Number, pr.CommitSHA, result.Comments)
@@ -313,6 +357,7 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		Comments:      result.Comments,
 		Diff:          result.Diff,
 		FileContents:  result.FileContents,
+		BugMemory:     agentOut.BugMemory,
 	}, nil
 }
 
@@ -952,6 +997,13 @@ func (p *Poller) saveReviewSidecar(ctx context.Context, filename, contentType st
 // the HTML review is the canonical artifact.
 func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlFilename string, rr *ReviewResult) {
 	pl := payload.Build(owner, repo, prNumber, commitSHA, rr.Comments, rr.Diff, rr.FileContents)
+	if len(rr.BugMemory.Matched) > 0 || len(rr.BugMemory.Excluded) > 0 {
+		pl.BugMemory = &payload.BugMemoryInfo{
+			Version:         rr.BugMemory.Version,
+			Matched:         rr.BugMemory.Matched,
+			ExcludedLeakage: rr.BugMemory.Excluded,
+		}
+	}
 	body, err := json.Marshal(pl)
 	if err != nil {
 		log.Printf("[REVIEWER] WARN: marshal findings sidecar for %s/%s#%d: %v", owner, repo, prNumber, err)

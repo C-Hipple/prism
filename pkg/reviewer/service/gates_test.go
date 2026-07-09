@@ -174,3 +174,72 @@ func TestGates_ModelProperty(t *testing.T) {
 		t.Errorf("test files should not alert: %+v", got)
 	}
 }
+
+func TestGates_PortalLayer_ClassWide(t *testing.T) {
+	dir := gateFixtureRepo(t)
+	// createPortal without layer -> alert (including plain .ts).
+	files := []diffFile{{Path: "app/preview.ts", Status: "modified",
+		Added: []string{"    return createPortal(content, document.body)"}}}
+	got := RunMechanicalGates(context.Background(), dir, files)
+	if len(got) != 1 || !strings.Contains(got[0].CommentBody, "portal overlay") {
+		t.Fatalf("want createPortal alert, got %+v", got)
+	}
+	// Any *Portal component -> alert.
+	files[0] = diffFile{Path: "app/Media.tsx", Status: "modified",
+		Added: []string{"        <FullscreenMediaPortal media={m} />"}}
+	if got := RunMechanicalGates(context.Background(), dir, files); len(got) != 1 {
+		t.Fatalf("want *Portal component alert, got %+v", got)
+	}
+	// createPortal alongside an explicit layer -> silent.
+	files[0] = diffFile{Path: "app/preview.ts", Status: "modified",
+		Added: []string{"    return createPortal(content, target)", "    layer={overlayLayer}"}}
+	if got := RunMechanicalGates(context.Background(), dir, files); len(got) != 0 {
+		t.Errorf("explicit layer should suppress: %+v", got)
+	}
+	// Identifier merely containing the substring -> silent.
+	files[0] = diffFile{Path: "app/util.ts", Status: "modified",
+		Added: []string{"    const recreatePortalCount = 3"}}
+	if got := RunMechanicalGates(context.Background(), dir, files); len(got) != 0 {
+		t.Errorf("substring identifier should not alert: %+v", got)
+	}
+}
+
+func TestParseNameStatusDiff_DeletedFileRemovals(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := runGit(context.Background(), dir, args...); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "t@example.com")
+	run("config", "user.name", "t")
+	if err := os.WriteFile(dir+"/doomed.ts", []byte("const menuId = getMenuId()\nexport { menuId }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-q", "-m", "base")
+	run("branch", "base")
+	run("rm", "-q", "doomed.ts")
+	run("commit", "-q", "-m", "delete file")
+
+	files, err := parseNameStatusDiff(context.Background(), dir, "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doomed *diffFile
+	for i := range files {
+		if files[i].Path == "doomed.ts" {
+			doomed = &files[i]
+		}
+	}
+	if doomed == nil || doomed.Status != "removed" {
+		t.Fatalf("deleted file missing from diff: %+v", files)
+	}
+	// The whole point: a deleted file's removed lines must feed the matchers.
+	joined := strings.Join(doomed.Removed, "\n")
+	if !strings.Contains(joined, "getMenuId") {
+		t.Errorf("removed lines of a deleted file were dropped: %+v", doomed.Removed)
+	}
+}

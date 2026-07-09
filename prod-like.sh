@@ -133,7 +133,17 @@ echo "  Port:        $SERVER_PORT"
 echo "  Logs:        ./server.log (also streamed to this terminal)"
 echo ""
 
+# Optional bug-memory library: mount the host file read-only and point the
+# container at the mount (BUG_MEMORY_HOST_FILE=/abs/path/library.json).
+BUGMEM_MOUNT=()
+BUG_MEMORY_PATH_CONTAINER=""
+if [ -n "${BUG_MEMORY_HOST_FILE:-}" ]; then
+  BUGMEM_MOUNT=(-v "$BUG_MEMORY_HOST_FILE:/app/data/bugmem/library.json:ro")
+  BUG_MEMORY_PATH_CONTAINER="/app/data/bugmem/library.json"
+fi
+
 docker run --rm \
+  "${BUGMEM_MOUNT[@]}" \
   --name "$CONTAINER_NAME" \
   -p "${SERVER_PORT}:8080" \
   -e "GITHUB_TOKEN=$GITHUB_TOKEN" \
@@ -152,6 +162,8 @@ docker run --rm \
   -e "AGENT_MODEL=${AGENT_MODEL:-}" \
   -e "AGENT_EFFORT=${AGENT_EFFORT:-}" \
   -e "DISABLE_POLLING=${DISABLE_POLLING:-}" \
+  -e "BUG_MEMORY_PATH=${BUG_MEMORY_PATH_CONTAINER:-}" \
+  -e "BUG_MEMORY_OBJECT=${BUG_MEMORY_OBJECT:-}" \
   -e "SERVER_PORT=8080" \
   -e "SKIP_DB_MIGRATIONS=$SKIP_DB_MIGRATIONS" \
   -e "GOOGLE_APPLICATION_CREDENTIALS=/home/appuser/.config/gcloud/application_default_credentials.json" \

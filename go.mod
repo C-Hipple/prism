@@ -7,6 +7,7 @@ toolchain go1.25.8
 require (
 	cloud.google.com/go/storage v1.59.2
 	github.com/anthropics/anthropic-sdk-go v1.19.0
+	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/fatih/color v1.18.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/gomarkdown/markdown v0.0.0-20250810172220-2e2c11897d1a

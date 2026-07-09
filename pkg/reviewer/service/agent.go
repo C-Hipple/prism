@@ -35,15 +35,21 @@ type AgentConfig struct {
 	GitHubToken  string        // optional; HTTPS clone auth
 	Model        string        // `claude` model id; defaults to DefaultAgentModel if empty
 	Effort       string        // `claude` reasoning effort; defaults to DefaultAgentEffort if empty
+
+	// BugMemory is the optional pattern library (nil = feature off). The
+	// matcher excludes entries sourced from the PR under review; see
+	// bugmemory.go.
+	BugMemory *BugMemoryLibrary
 }
 
 // AgentReview is the result of a successful agent run.
 type AgentReview struct {
-	Comments []types.LineComment // parsed from the agent's final JSON response
-	Gates    []types.LineComment // mechanical gate findings (advisory, provenance "mechanical")
-	RawFinal string              // the agent's final result text (pre-parse, for debugging)
-	CloneDir string              // path to the per-invocation clone (kept for inspection)
-	LogPath  string              // path to the raw stream-json file
+	Comments  []types.LineComment // parsed from the agent's final JSON response
+	Gates     []types.LineComment // mechanical gate findings (advisory, provenance "mechanical")
+	BugMemory BugMemoryMatch      // which memory entries were injected/excluded (telemetry)
+	RawFinal  string              // the agent's final result text (pre-parse, for debugging)
+	CloneDir  string              // path to the per-invocation clone (kept for inspection)
+	LogPath   string              // path to the raw stream-json file
 }
 
 // Spawner abstracts subprocess creation so tests can stub the `claude` CLI.
@@ -124,15 +130,32 @@ func RunAgentReview(
 	}()
 	log.Printf("%s clone ok (%s) at %s", logPrefix, time.Since(cloneStart), cloneDir)
 
+	// Parse the PR diff once; the same []diffFile feeds both the mechanical
+	// gates and the bug-memory matcher, so offline dry-runs of either are
+	// predictive of production behavior.
+	diffFiles := diffFilesForWorktree(runCtx, cloneDir, defaultBranch, agentCfg.GitHubToken, owner+"/"+repo, prNumber)
+
 	// Mechanical gates: cheap deterministic checks over the diff + worktree.
 	// Their findings go into the prompt (the agent must address each) AND are
 	// returned for the reconciliation merge, so they survive dismissal.
-	gates := GatesForWorktree(runCtx, cloneDir, defaultBranch)
+	var gates []types.LineComment
+	if diffFiles != nil {
+		gates = RunMechanicalGates(runCtx, cloneDir, diffFiles)
+	}
 	if len(gates) > 0 {
 		log.Printf("%s mechanical gates fired: %d", logPrefix, len(gates))
 	}
 
-	prompt, err := buildAgentPromptContent(geminiComments, gates)
+	// Bug memory: patterns from this deployment's past bugs, matched to the
+	// touched areas. Entries sourced from this exact PR are excluded by the
+	// matcher (structural leave-one-out).
+	memEntries, memMatch := MatchBugMemory(agentCfg.BugMemory, diffFiles, owner, repo, prNumber)
+	if len(memMatch.Matched) > 0 || len(memMatch.Excluded) > 0 {
+		log.Printf("%s bug memory: injected=%v excluded_leakage=%v (version %s)",
+			logPrefix, memMatch.Matched, memMatch.Excluded, memMatch.Version)
+	}
+
+	prompt, err := buildAgentPromptContent(geminiComments, gates, memEntries)
 	if err != nil {
 		return nil, fmt.Errorf("agent: build prompt: %w", err)
 	}
@@ -226,11 +249,12 @@ func RunAgentReview(
 		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments))
 
 	return &AgentReview{
-		Comments: comments,
-		Gates:    gates,
-		RawFinal: parseResult.finalOutput,
-		CloneDir: cloneDir,
-		LogPath:  logPath,
+		Comments:  comments,
+		Gates:     gates,
+		BugMemory: memMatch,
+		RawFinal:  parseResult.finalOutput,
+		CloneDir:  cloneDir,
+		LogPath:   logPath,
 	}, nil
 }
 
@@ -307,8 +331,10 @@ func matchBracket(s string, start int) int {
 }
 
 // buildAgentPromptContent assembles the agent prompt: the static template,
-// the mechanical-gate alerts (if any), then a JSON block of Gemini comments.
-func buildAgentPromptContent(geminiComments, gates []types.LineComment) (string, error) {
+// the mechanical-gate alerts (if any), the bug-history section (if any
+// memory entries matched), then a JSON block of Gemini comments. With no
+// gates and no matches the prompt is byte-identical to a memoryless build.
+func buildAgentPromptContent(geminiComments, gates []types.LineComment, bugHistory []BugMemoryEntry) (string, error) {
 	commentsJSON, err := json.MarshalIndent(geminiComments, "", "  ")
 	if err != nil {
 		return "", err
@@ -321,6 +347,7 @@ func buildAgentPromptContent(geminiComments, gates []types.LineComment) (string,
 			b.WriteString("- [" + g.FilePath + "] " + g.CommentBody + "\n")
 		}
 	}
+	b.WriteString(bugMemorySection(bugHistory))
 	b.WriteString("\n--- GEMINI COMMENTS (JSON) ---\n")
 	b.Write(commentsJSON)
 	return b.String(), nil
