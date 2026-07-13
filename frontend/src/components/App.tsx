@@ -5,6 +5,7 @@ import { Header, StatusBar } from '@/components/layout';
 import { FilterBar } from '@/components/filters';
 import { ReviewPRsSection } from '@/components/prs';
 import { useTelemetry } from '@/hooks/useTelemetry';
+import { useUrlFilters } from '@/hooks/useUrlFilters';
 import { UsageStatsPage } from '@/components/telemetry/UsageStatsPage';
 import { PR } from '@/types/pr';
 import { ServerStatus } from '@/types/status';
@@ -64,12 +65,15 @@ function AppContent() {
   // Connection status state
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
 
-  // Search state
-  const [searchTerm, setSearchTerm] = useState('');
-
-  // Filter state
-  const [selectedTeams, setSelectedTeams] = useState<string[]>([]);
-  const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
+  // Search + filter state, mirrored into URL query params for back/forward nav
+  const {
+    searchTerm,
+    setSearchTerm,
+    selectedTeams,
+    setSelectedTeams,
+    selectedRepos,
+    setSelectedRepos,
+  } = useUrlFilters();
 
   // Shared WebSocket connection
   useEffect(() => {
