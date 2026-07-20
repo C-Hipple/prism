@@ -15,10 +15,13 @@ import (
 	"google.golang.org/api/option"
 )
 
-// ALWAYS use the 2.5 models
+// Pro is pinned to the 3.1 preview (the -latest alias still resolves to 2.5
+// Pro while no stable 3.x Pro exists). Flash stays on the stable alias — a
+// 3.5-flash swap was evaluated and rejected: label flips were within
+// single-model sampling noise.
 const (
 	FlashModel = "gemini-flash-latest"
-	ProModel   = "gemini-pro-latest"
+	ProModel   = "gemini-3.1-pro-preview"
 )
 
 // IClient defines the interface for an LLM client.
