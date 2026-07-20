@@ -55,7 +55,7 @@ func TestModelNameResolution(t *testing.T) {
 		assert.Equal(t, DefaultProModel, ProModelName())
 		assert.Equal(t, DefaultFlashModel, FlashModelName())
 		// Pin the literals so a default change is a deliberate, visible edit.
-		assert.Equal(t, "gemini-pro-latest", ProModelName())
+		assert.Equal(t, "gemini-3.1-pro-preview", ProModelName())
 		assert.Equal(t, "gemini-flash-latest", FlashModelName())
 	})
 
