@@ -314,8 +314,13 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		BugMemory:      p.bugMemory,
 		RequiredChecks: p.cfg.RequiredChecks,
 	}
+	// Pass the PR's true base branch so the clone and the deterministic-layer
+	// diff (gates, bug memory, required checks) are computed against it. With
+	// "" the diff falls back to origin/HEAD, which inflates the changed-line
+	// set for PRs stacked on non-default branches — misattributing gate alerts
+	// to parent-branch code or tripping the pathological-diff guard entirely.
 	agentOut, agentErr := service.RunAgentReview(ctx, agentCfg, p.agentSpawner,
-		pr.Owner, pr.Repo, "", pr.Number, pr.CommitSHA, result.Comments)
+		pr.Owner, pr.Repo, result.BaseRef, pr.Number, pr.CommitSHA, result.Comments)
 	if agentErr != nil {
 		log.Printf("[REVIEWER] ERROR: agent review failed for PR %d: %v", pr.Number, agentErr)
 		return nil, fmt.Errorf("agent review: %w", agentErr)

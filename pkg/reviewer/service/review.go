@@ -68,6 +68,7 @@ type ReviewResult struct {
 	Comments             []types.LineComment
 	Diff                 string
 	PRBody               string
+	BaseRef              string // the PR's base branch; "" when unknown
 	Prompt               string
 	PromptTokenCount     int32
 	CandidatesTokenCount int32
@@ -193,6 +194,7 @@ func (s *Service) PerformReviewWithContext(ctx context.Context, cfg PerformRevie
 		Comments:             finalComments,
 		Diff:                 data.Diff,
 		PRBody:               data.PR.Body,
+		BaseRef:              data.PR.Base.Ref,
 		Prompt:               fullPrompt,
 		PromptTokenCount:     execResult.PromptTokenCount,
 		CandidatesTokenCount: execResult.CandidatesTokenCount,

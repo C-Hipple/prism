@@ -243,3 +243,74 @@ func TestParseNameStatusDiff_DeletedFileRemovals(t *testing.T) {
 		t.Errorf("removed lines of a deleted file were dropped: %+v", doomed.Removed)
 	}
 }
+
+// TestDiffFilesForWorktree_StackedBase proves the deterministic layer diffs
+// against the PR's true base when it is provided, and documents the
+// origin/HEAD fallback's inflation for PRs stacked on non-default branches:
+// with base="" the parent branch's changes are misattributed to the PR.
+func TestDiffFilesForWorktree_StackedBase(t *testing.T) {
+	skipIfNoGit(t)
+	upstream := t.TempDir()
+	runIn := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e.c",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e.c")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s: %v (%s)", args, dir, err, out)
+		}
+		return string(out)
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(upstream, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Upstream: main -> feature-parent (adds parent.ts) -> feature-child (adds child.ts).
+	runIn(upstream, "init", "-q", "-b", "main")
+	write("app/base.ts", "export const base = 1\n")
+	runIn(upstream, "add", ".")
+	runIn(upstream, "commit", "-q", "-m", "base")
+	runIn(upstream, "checkout", "-q", "-b", "feature-parent")
+	write("app/parent.ts", "export const parent = 2\n")
+	runIn(upstream, "add", ".")
+	runIn(upstream, "commit", "-q", "-m", "parent work")
+	runIn(upstream, "checkout", "-q", "-b", "feature-child")
+	write("app/child.ts", "export const child = 3\n")
+	runIn(upstream, "add", ".")
+	runIn(upstream, "commit", "-q", "-m", "child pr")
+	runIn(upstream, "checkout", "-q", "main") // so origin/HEAD resolves to main in clones
+
+	clone := filepath.Join(t.TempDir(), "clone")
+	runIn(".", "clone", "-q", upstream, clone)
+	runIn(clone, "checkout", "-q", "origin/feature-child")
+
+	names := func(files []diffFile) map[string]bool {
+		m := map[string]bool{}
+		for _, f := range files {
+			m[f.Path] = true
+		}
+		return m
+	}
+
+	// True base: only the child PR's own change.
+	got := names(diffFilesForWorktree(context.Background(), clone, "feature-parent", "", "", 0))
+	if !got["app/child.ts"] || got["app/parent.ts"] {
+		t.Fatalf("base=feature-parent: want exactly the child change, got %v", got)
+	}
+
+	// Fallback ("" -> origin/HEAD = main): the parent branch's changes leak in.
+	got = names(diffFilesForWorktree(context.Background(), clone, "", "", "", 0))
+	if !got["app/child.ts"] || !got["app/parent.ts"] {
+		t.Fatalf("base=\"\": expected documented inflation (parent+child), got %v", got)
+	}
+}
