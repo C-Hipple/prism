@@ -48,6 +48,7 @@ type Config struct {
 	AgentEffort        string // `claude` reasoning effort for agent reviews (empty = service default)
 	BugMemoryPath      string // local path to a bug-memory library JSON (dev/benchmark)
 	BugMemoryObject    string // GCS object name of the library (prod); Path wins if both set
+	RequiredChecks     bool   // convert fired gates/memory entries into forced-choice agent checks (service/checks.go)
 }
 
 // IsMultiUserMode returns true if the application is configured for multi-user mode (GitHub App)
@@ -122,6 +123,7 @@ func Load() *Config {
 		AgentEffort:        os.Getenv("AGENT_EFFORT"),
 		BugMemoryPath:      os.Getenv("BUG_MEMORY_PATH"),
 		BugMemoryObject:    os.Getenv("BUG_MEMORY_OBJECT"),
+		RequiredChecks:     os.Getenv("REQUIRED_CHECKS") == "true",
 	}
 }
 

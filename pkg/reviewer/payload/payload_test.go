@@ -1,6 +1,7 @@
 package payload
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -271,6 +272,33 @@ func TestToCompactMarkdown_OmitsEmptyHunkAndSource(t *testing.T) {
 	}
 	if strings.Contains(out, "SOURCE CONTEXT") {
 		t.Errorf("should omit SOURCE CONTEXT when empty:\n%s", out)
+	}
+}
+
+// The optional required_checks block must serialize its funnel counters and
+// stay absent when the feature issued no checks (sidecar byte-compat with
+// checkless builds).
+func TestPayload_RequiredChecksJSON(t *testing.T) {
+	p := Build("o", "r", 1, "sha", nil, "", nil)
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "required_checks") {
+		t.Errorf("unset required_checks must be omitted: %s", data)
+	}
+
+	p.RequiredChecks = &RequiredChecksInfo{Issued: 3, Answered: 2, Violated: 1, EvidenceOK: 1}
+	data, err = json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"checks_issued":3`, `"checks_answered":2`, `"checks_violated":1`, `"checks_evidence_ok":1`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("marshaled payload missing %s: %s", want, data)
+		}
 	}
 }
 

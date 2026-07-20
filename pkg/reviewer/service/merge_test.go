@@ -101,6 +101,32 @@ func TestMergeFindings_WholeFileMatchesOnlyWholeFile(t *testing.T) {
 	}
 }
 
+// Whole-file findings carry no line signal to corroborate a basename match,
+// so they dedup only on a strict path match: two directories' models.py are
+// distinct findings, not duplicates.
+func TestMergeFindings_WholeFileRequiresStrictPathMatch(t *testing.T) {
+	agent := FindingSet{Provenance: "agent", Comments: []types.LineComment{
+		lc("payments/models.py", 0, "LOW", "reviewed, looks fine")}}
+	checks := FindingSet{Provenance: "required-check", Comments: []types.LineComment{
+		lc("tipping/models.py", 0, "MEDIUM", "unresolved memory check")}}
+	got := MergeFindings(agent, checks)
+	if len(got) != 2 {
+		t.Fatalf("basename-only match must not dedup whole-file findings: %+v", got)
+	}
+
+	// Exact (and whole-path-suffix) matches still dedup, and the earlier
+	// set's phrasing wins: a gate alert collapses into the required-check
+	// synthesis that precedes it, not the other way around.
+	synth := FindingSet{Provenance: "required-check", Comments: []types.LineComment{
+		lc("app/Tooltip.tsx", 0, "MEDIUM", "escalated VIOLATED answer")}}
+	mech := FindingSet{Provenance: "mechanical", Comments: []types.LineComment{
+		lc("app/Tooltip.tsx", 0, "MEDIUM", "generic advisory")}}
+	got = MergeFindings(synth, mech)
+	if len(got) != 1 || !strings.Contains(got[0].CommentBody, "escalated VIOLATED answer") {
+		t.Fatalf("gate alert should collapse into the earlier synthesis: %+v", got)
+	}
+}
+
 func TestMergeFindings_EmptyAndSingleSet(t *testing.T) {
 	if got := MergeFindings(); got != nil {
 		t.Errorf("no sets -> nil, got %+v", got)

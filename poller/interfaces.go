@@ -99,6 +99,10 @@ type ReviewResult struct {
 	// agent prompt (and which were excluded by the leave-one-out rule) so the
 	// sidecar can attribute catches. Zero value when the feature is off.
 	BugMemory service.BugMemoryMatch
+
+	// Checks carries the required-check funnel telemetry from the agent
+	// stage (see service/checks.go). Zero value when the feature is off.
+	Checks service.RequiredCheckTelemetry
 }
 
 // ReviewGeneratorConfig contains configuration for generating a review

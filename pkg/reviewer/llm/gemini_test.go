@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -36,4 +37,41 @@ func TestNewClient_ModelSelection(t *testing.T) {
 	assert.NotPanics(t, func() {
 		_ = NewClient(ProviderClaude, "dummy-key", true, false)
 	}, "NewClient should not panic when selecting the Claude Haiku model")
+}
+
+// TestModelNameResolution verifies that the Gemini model names resolve from
+// the GEMINI_PRO_MODEL / GEMINI_FLASH_MODEL environment variables when set,
+// and fall back to the package defaults when unset or empty — guaranteeing
+// zero behavior change for deployments that don't set the overrides.
+func TestModelNameResolution(t *testing.T) {
+	t.Run("defaults when env unset", func(t *testing.T) {
+		// t.Setenv registers a cleanup restoring the original values;
+		// unsetting afterwards exercises the true "unset" case.
+		t.Setenv("GEMINI_PRO_MODEL", "")
+		t.Setenv("GEMINI_FLASH_MODEL", "")
+		os.Unsetenv("GEMINI_PRO_MODEL")
+		os.Unsetenv("GEMINI_FLASH_MODEL")
+
+		assert.Equal(t, DefaultProModel, ProModelName())
+		assert.Equal(t, DefaultFlashModel, FlashModelName())
+		// Pin the literals so a default change is a deliberate, visible edit.
+		assert.Equal(t, "gemini-pro-latest", ProModelName())
+		assert.Equal(t, "gemini-flash-latest", FlashModelName())
+	})
+
+	t.Run("defaults when env empty", func(t *testing.T) {
+		t.Setenv("GEMINI_PRO_MODEL", "")
+		t.Setenv("GEMINI_FLASH_MODEL", "")
+
+		assert.Equal(t, DefaultProModel, ProModelName())
+		assert.Equal(t, DefaultFlashModel, FlashModelName())
+	})
+
+	t.Run("env overrides defaults", func(t *testing.T) {
+		t.Setenv("GEMINI_PRO_MODEL", "gemini-2.5-pro")
+		t.Setenv("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
+
+		assert.Equal(t, "gemini-2.5-pro", ProModelName())
+		assert.Equal(t, "gemini-2.5-flash", FlashModelName())
+	})
 }

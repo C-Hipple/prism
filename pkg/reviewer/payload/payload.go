@@ -43,6 +43,11 @@ type Payload struct {
 	// pattern-library entries for this review; consumers use it to attribute
 	// findings to injected priors.
 	BugMemory *BugMemoryInfo `json:"bug_memory,omitempty"`
+
+	// RequiredChecks is present when the required-checks feature issued
+	// forced-choice checks for this review; consumers use it to reconstruct
+	// the issued → answered → violated/evidence-ok conversion funnel.
+	RequiredChecks *RequiredChecksInfo `json:"required_checks,omitempty"`
 }
 
 // BugMemoryInfo mirrors the service-layer match telemetry without importing it.
@@ -50,6 +55,15 @@ type BugMemoryInfo struct {
 	Version         string   `json:"version"`
 	Matched         []string `json:"matched"`
 	ExcludedLeakage []string `json:"excluded_leakage,omitempty"`
+}
+
+// RequiredChecksInfo mirrors the service-layer required-check funnel
+// telemetry without importing it.
+type RequiredChecksInfo struct {
+	Issued     int `json:"checks_issued"`
+	Answered   int `json:"checks_answered"`
+	Violated   int `json:"checks_violated"`
+	EvidenceOK int `json:"checks_evidence_ok"`
 }
 
 // Counts is the per-severity tally. Mirrors the columns on the PR row.

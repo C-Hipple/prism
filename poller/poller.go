@@ -304,14 +304,15 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		return nil, fmt.Errorf("agent review: get GitHub token: %w", tokenErr)
 	}
 	agentCfg := service.AgentConfig{
-		CloneRootDir: p.cfg.AgentCloneRootDir,
-		LogsDir:      p.cfg.AgentLogsDir,
-		WallClock:    time.Duration(p.cfg.AgentWallClockSec) * time.Second,
-		MaxTurns:     p.cfg.AgentMaxTurns,
-		GitHubToken:  gitToken,
-		Model:        p.cfg.AgentModel,
-		Effort:       p.cfg.AgentEffort,
-		BugMemory:    p.bugMemory,
+		CloneRootDir:   p.cfg.AgentCloneRootDir,
+		LogsDir:        p.cfg.AgentLogsDir,
+		WallClock:      time.Duration(p.cfg.AgentWallClockSec) * time.Second,
+		MaxTurns:       p.cfg.AgentMaxTurns,
+		GitHubToken:    gitToken,
+		Model:          p.cfg.AgentModel,
+		Effort:         p.cfg.AgentEffort,
+		BugMemory:      p.bugMemory,
+		RequiredChecks: p.cfg.RequiredChecks,
 	}
 	agentOut, agentErr := service.RunAgentReview(ctx, agentCfg, p.agentSpawner,
 		pr.Owner, pr.Repo, "", pr.Number, pr.CommitSHA, result.Comments)
@@ -336,6 +337,15 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 	merged := service.MergeFindings(
 		service.FindingSet{Provenance: "agent", Comments: agentOut.Comments},
 		service.FindingSet{Provenance: "first-pass", Comments: firstPassCriticals},
+		// Required-check escalations (empty unless REQUIRED_CHECKS is on):
+		// synthesized VIOLATED findings and unanswered memory re-admissions.
+		// Merging as a lower-priority set reuses the provenance note and the
+		// MEDIUM severity cap. This set must precede "mechanical": a
+		// gate-derived VIOLATED synthesis anchors to the same (file, line 0)
+		// as the gate alert that spawned it, and the earlier set's phrasing
+		// wins the dedup — the confirmed-defect body must absorb the generic
+		// advisory, not vanish into it.
+		service.FindingSet{Provenance: "required-check", Comments: agentOut.CheckFindings},
 		service.FindingSet{Provenance: "mechanical", Comments: agentOut.Gates},
 	)
 	readmitted := len(merged) - len(agentOut.Comments)
@@ -344,8 +354,13 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 	log.Printf("[REVIEWER] PR %d: agent stage ok (clone=%s, log=%s, agent_comments=%d, readmitted_first_pass=%d, critical=%d, medium=%d, low=%d)",
 		pr.Number, agentOut.CloneDir, agentOut.LogPath, len(agentOut.Comments), readmitted,
 		result.CriticalCount, result.MediumCount, result.LowCount)
+	if agentOut.Checks.ChecksIssued > 0 {
+		log.Printf("[REVIEWER] PR %d: required checks: issued=%d answered=%d violated=%d evidence_ok=%d",
+			pr.Number, agentOut.Checks.ChecksIssued, agentOut.Checks.ChecksAnswered,
+			agentOut.Checks.ChecksViolated, agentOut.Checks.ChecksEvidenceOK)
+	}
 
-	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModel)
+	htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
 	if htmlContent == nil {
 		return nil, fmt.Errorf("failed to generate HTML content from agent comments")
 	}
@@ -358,6 +373,7 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		Diff:          result.Diff,
 		FileContents:  result.FileContents,
 		BugMemory:     agentOut.BugMemory,
+		Checks:        agentOut.Checks,
 	}, nil
 }
 
@@ -1002,6 +1018,17 @@ func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string,
 			Version:         rr.BugMemory.Version,
 			Matched:         rr.BugMemory.Matched,
 			ExcludedLeakage: rr.BugMemory.Excluded,
+		}
+	}
+	// Persist the required-check funnel alongside the findings: the sidecar
+	// is the artifact benchmark attribution reads (Cloud Run logs rotate),
+	// so the telemetry must survive there, mirroring bug_memory above.
+	if rr.Checks.ChecksIssued > 0 {
+		pl.RequiredChecks = &payload.RequiredChecksInfo{
+			Issued:     rr.Checks.ChecksIssued,
+			Answered:   rr.Checks.ChecksAnswered,
+			Violated:   rr.Checks.ChecksViolated,
+			EvidenceOK: rr.Checks.ChecksEvidenceOK,
 		}
 	}
 	body, err := json.Marshal(pl)
@@ -2154,7 +2181,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 					reviewResult, err = p.runAgentStage(prCtx, pr, result)
 				} else {
 					// Legacy HTML report path.
-					htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModel)
+					htmlContent := service.GenerateHTMLReportContent(result, pr.Number, pr.Owner, pr.Repo, pr.CommitSHA, llm.ProModelName())
 					if htmlContent == nil {
 						err = fmt.Errorf("failed to generate HTML content")
 					} else {

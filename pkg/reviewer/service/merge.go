@@ -48,7 +48,9 @@ func importanceRank(imp string) int {
 //   - Two non-SUMMARY findings are duplicates when they target the same file
 //     (matched on full path or basename, since sources differ in how much of
 //     the path they emit) within mergeLineTolerance lines. Line 0 (whole-file)
-//     only matches line 0.
+//     only matches line 0, and only on a strict path match — with no line to
+//     corroborate, basename equality alone would collapse findings on
+//     conventionally named files (models.py, index.ts) across directories.
 //   - Duplicates keep the higher-priority phrasing but upgrade Importance to
 //     the max across the pair — a later source never *lowers* severity.
 //   - Findings unique to a lower-priority set are appended with a provenance
@@ -123,7 +125,9 @@ func findDuplicate(merged []types.LineComment, c types.LineComment) (int, bool) 
 			continue
 		}
 		if m.LineNumber == 0 || c.LineNumber == 0 {
-			if m.LineNumber == c.LineNumber {
+			// Whole-file findings carry no line signal to corroborate a
+			// basename match, so they dedup only on a strict path match.
+			if m.LineNumber == c.LineNumber && sameFileStrict(m.FilePath, c.FilePath) {
 				return i, true
 			}
 			continue
@@ -142,13 +146,14 @@ func findDuplicate(merged []types.LineComment, c types.LineComment) (int, bool) 
 // sameFile matches paths exactly, or by suffix/basename — different sources
 // emit different amounts of leading path for the same file.
 func sameFile(a, b string) bool {
-	if a == b {
-		return true
-	}
-	if strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a) {
-		return true
-	}
-	return path.Base(a) == path.Base(b)
+	return sameFileStrict(a, b) || path.Base(a) == path.Base(b)
+}
+
+// sameFileStrict matches paths exactly or by whole-path suffix, never by bare
+// basename. Use it wherever no line number can corroborate the match: two
+// directories' models.py are different files, not duplicates.
+func sameFileStrict(a, b string) bool {
+	return a == b || strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a)
 }
 
 // provenanceNote renders the marker prepended to re-admitted findings.

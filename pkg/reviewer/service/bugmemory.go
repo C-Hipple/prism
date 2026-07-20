@@ -32,6 +32,13 @@ type BugMemoryEntry struct {
 	Pattern         string   `json:"pattern"`          // <=400 chars, one-sentence failure mode + what to verify
 	TriggerPaths    []string `json:"trigger_paths"`    // doublestar globs against changed paths
 	TriggerKeywords []string `json:"trigger_keywords"` // case-insensitive substrings against added+removed lines
+
+	// Check is an optional imperative verification procedure. When set (and
+	// the required-checks feature is on), a matched entry additionally becomes
+	// a forced-choice check the agent must answer with evidence — see
+	// checks.go. Entries without it inject exactly as before (backward
+	// compatible: older libraries parse unchanged).
+	Check string `json:"check,omitempty"`
 }
 
 // BugMemoryMatch is the observable result of matching, kept for telemetry.
@@ -52,6 +59,7 @@ const (
 	bugMemoryMaxEntries    = 6    // injected entries per review
 	bugMemoryMaxPerClass   = 2    // per failure-mode class
 	bugMemoryPatternMax    = 400  // chars per pattern
+	bugMemoryCheckMax      = 700  // chars per check procedure (imperative text runs longer than a pattern)
 	bugMemorySectionBudget = 6000 // chars for the whole prompt section
 )
 
@@ -76,7 +84,8 @@ func LoadBugMemory(data []byte) (*BugMemoryLibrary, []string, error) {
 			// A typo'd glob would otherwise never match and never tell anyone.
 			dropped = append(dropped, e.ID+": invalid trigger path glob "+firstBadGlob(e.TriggerPaths))
 		default:
-			e.Pattern = sanitizePattern(e.Pattern)
+			e.Pattern = sanitizeText(e.Pattern, bugMemoryPatternMax)
+			e.Check = sanitizeText(e.Check, bugMemoryCheckMax)
 			kept = append(kept, e)
 		}
 	}
@@ -84,14 +93,14 @@ func LoadBugMemory(data []byte) (*BugMemoryLibrary, []string, error) {
 	return &lib, dropped, nil
 }
 
-// sanitizePattern applies structural sanitization only: collapse newline runs
+// sanitizeText applies structural sanitization only: collapse newline runs
 // (entries are prompt lines, not documents), neutralize code fences, and cap
-// length. No phrase filtering — that silently eats legitimate entries.
-func sanitizePattern(p string) string {
+// length at max. No phrase filtering — that silently eats legitimate entries.
+func sanitizeText(p string, max int) string {
 	p = strings.ReplaceAll(p, "```", "'''")
 	p = strings.Join(strings.Fields(p), " ")
-	if len(p) > bugMemoryPatternMax {
-		cut := bugMemoryPatternMax
+	if len(p) > max {
+		cut := max
 		for cut > 0 && !utf8.RuneStart(p[cut]) {
 			cut-- // never split a multi-byte rune into invalid UTF-8
 		}
