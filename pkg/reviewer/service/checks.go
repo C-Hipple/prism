@@ -77,6 +77,11 @@ var gateCheckKinds = []struct{ marker, slug string }{
 	{"shared module edited", "shared-file"},
 	{"new model property", "model-property"},
 	{"backend topic without frontend counterpart", "registry-split"},
+	{"new symbol with no references", "wiring"},
+	{"symbol de-wired", "wiring"},
+	{"resource acquired without unmount cleanup", "effect-cleanup"},
+	{"task payload contract changed", "task-skew"},
+	{"migration residue", "migration-residue"},
 }
 
 // backtickToken pulls the first `code` span out of an alert body (the gates
@@ -195,6 +200,30 @@ func gateCheckQuestion(slug string, alert types.LineComment) string {
 			cls = "`" + m[1] + "`"
 		}
 		return fmt.Sprintf("%s registers %s on the backend and no same-named frontend counterpart was found. VIOLATED = the counterpart is genuinely missing (clients cannot handle the unknown topic) — cite the backend registration file:line. SAFE = cite the frontend counterpart class's file:line.", alert.FilePath, cls)
+	case "wiring":
+		sym := "the flagged symbol"
+		if m := backtickToken.FindStringSubmatch(alert.CommentBody); m != nil {
+			sym = "`" + m[1] + "`"
+		}
+		return fmt.Sprintf("%s changes the wiring of %s: either it is newly added with nothing referencing it, or this diff removed its last call/render site. Trace the runtime path from the relevant entrypoint(s) — including each platform variant the code serves — to the symbol. VIOLATED = no reachable path invokes/mounts it where it is needed (dead or de-wired) — cite the entrypoint file:line where the wiring is missing and the user-visible effect. SAFE = cite the caller/mount chain file:line that reaches it (or the command run + result proving reachability).", alert.FilePath, sym)
+	case "effect-cleanup":
+		res := "the acquired resource"
+		if m := backtickToken.FindStringSubmatch(alert.CommentBody); m != nil {
+			res = "`" + m[1] + "`"
+		}
+		return fmt.Sprintf("%s acquires a leak-prone resource (%s) without an unmount cleanup in the added code. Identify where the resource is released when the component unmounts (not merely on a mirroring UI event — pointer/UI handlers do not fire on unmount or navigation). VIOLATED = no unmount path releases it, so navigating away leaks it — cite the acquisition file:line and state what keeps running. SAFE = cite the cleanup file:line (effect cleanup return, unmount hook, or an equivalent guarantee).", alert.FilePath, res)
+	case "task-skew":
+		tok := "the flagged payload element"
+		if m := backtickToken.FindStringSubmatch(alert.CommentBody); m != nil {
+			tok = "`" + m[1] + "`"
+		}
+		return fmt.Sprintf("%s changes the payload contract of a deferred/queued task (%s). During a deploy, old-code producers and workers coexist with new code and messages are already in flight: determine what happens when an old-format payload meets new code, and when old code meets a new-format payload. VIOLATED = either direction fails or renders wrong during the window — cite the incompatible read/write file:line. SAFE = cite the compat handling file:line (both formats accepted) or the evidence that no old-format payload can cross the deploy.", alert.FilePath, tok)
+	case "migration-residue":
+		val := "the migrated value"
+		if m := backtickToken.FindStringSubmatch(alert.CommentBody); m != nil {
+			val = "`" + m[1] + "`"
+		}
+		return fmt.Sprintf("%s migrates %s but other files still carry the old value (survivors listed in the alert). For each cited survivor, determine whether it still produces or consumes the old value on a reachable runtime path. VIOLATED = a surviving producer/consumer now breaks (fails validation, silently stops matching) — cite the survivor file:line and the failure. SAFE = cite file:line evidence that every survivor is dead code, test-only, or intentionally accepts both values.", alert.FilePath, val)
 	default:
 		return fmt.Sprintf("Resolve this mechanical alert with evidence from this PR's code: %s VIOLATED = the alerted risk is real — cite the defect file:line. SAFE = cite the file:line or the command run + result that clears it.", alert.CommentBody)
 	}

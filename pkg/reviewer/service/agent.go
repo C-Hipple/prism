@@ -507,6 +507,26 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 	}
 	log.Printf("%s git fetch DONE in %s", logPrefix, time.Since(t1))
 
+	// Step 2b: fetch the PR's base branch into the cache. --depth implies
+	// --single-branch, so the shared cache only tracks the branch it was
+	// initialized with: without this, origin/<base> never exists for a PR
+	// based on any other branch (stacked PRs — or every default-base PR when
+	// the cache was initialized by a stacked one), and the deterministic
+	// layer's diff (gates, bug memory, required checks) silently degrades to
+	// "no signal". Also keeps origin/<base> fresh as the base moves. A
+	// separate best-effort fetch, not folded into the PR fetch above: the
+	// review itself only needs the PR head, and diffFilesForWorktree has its
+	// own recovery path if this fails (e.g. a deleted base branch).
+	if defaultBranch != "" {
+		baseArgs := authHeaderArgs(token)
+		baseArgs = append(baseArgs, "fetch", "--quiet", "--depth", "200", "origin",
+			fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", defaultBranch, defaultBranch))
+		if out, err := runGit(ctx, cacheDir, baseArgs...); err != nil {
+			log.Printf("%s WARN: base-branch fetch (%s): %v (%s) — deterministic layer may find no diff base",
+				logPrefix, defaultBranch, err, redactToken(out, token))
+		}
+	}
+
 	// Step 3: create a worktree for this review at the requested commit.
 	// Worktrees share the cache's object store, so this is near-instant.
 	// Use the absolute target path so the worktree lands where the caller

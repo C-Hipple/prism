@@ -20,6 +20,12 @@ func gateAlertFixture(kind, file string) types.LineComment {
 		"shared-file":    "**Mechanical alert — shared module edited.** This PR modifies 2 shared/base module(s): common/util.py, common/base.ts.",
 		"model-property": "**Mechanical alert — new model property.** This change adds a property to a Django model.",
 		"registry-split": "**Mechanical alert — backend topic without frontend counterpart.** `OrphanTopic` is registered on the backend, but no class of that name exists under `fe/`.",
+		// Round-3 gates (owned by gates.go).
+		"wiring-dead":       "**Mechanical alert — new symbol with no references.** `orphan_fn` is added by this PR but has no references outside its definition file (tests excluded).",
+		"wiring-dewired":    "**Mechanical alert — symbol de-wired.** This PR removes the last remaining call/render site of `OrphanWidget` (tests excluded).",
+		"effect-cleanup":    "**Mechanical alert — resource acquired without unmount cleanup.** This change starts a leak-prone resource (`startPolling(`) from JSX event handlers.",
+		"task-skew":         "**Mechanical alert — task payload contract changed.** The serialized payload key `old_key` is removed by this PR and survives nowhere in the tree.",
+		"migration-residue": "**Mechanical alert — migration residue.** This PR migrates the value `legacy_kind` -> `modern_kind` (context `kind`) in app/config.py, but 2 line(s) in other files still carry the old value.",
 	}
 	return types.LineComment{FilePath: file, LineNumber: 0, Importance: "MEDIUM", CommentBody: bodies[kind]}
 }
@@ -96,6 +102,47 @@ func TestBuildRequiredChecks_RegistrySplitAndModelTemplates(t *testing.T) {
 	}
 	if got[2].ID != "CHK-portal-layer-1" || !strings.Contains(got[2].Question, "fullscreen") {
 		t.Errorf("portal-layer: %q / %q", got[2].ID, got[2].Question)
+	}
+}
+
+func TestBuildRequiredChecks_Round3Templates(t *testing.T) {
+	gates := []types.LineComment{
+		gateAlertFixture("wiring-dead", "app/new.py"),
+		gateAlertFixture("effect-cleanup", "app/Thumb.tsx"),
+		gateAlertFixture("task-skew", "queue/tasks.py"),
+		gateAlertFixture("migration-residue", "app/config.py"),
+	}
+	got := BuildRequiredChecks(gates, nil, []diffFile{{Path: "app/new.py"}})
+	if len(got) != 4 {
+		t.Fatalf("want 4, got %+v", got)
+	}
+	if got[0].ID != "CHK-wiring-1" || !strings.Contains(got[0].Question, "`orphan_fn`") ||
+		!strings.Contains(got[0].Question, "entrypoint") {
+		t.Errorf("wiring: %q / %q", got[0].ID, got[0].Question)
+	}
+	if got[1].ID != "CHK-effect-cleanup-1" || !strings.Contains(got[1].Question, "`startPolling(`") ||
+		!strings.Contains(got[1].Question, "unmount") {
+		t.Errorf("effect-cleanup: %q / %q", got[1].ID, got[1].Question)
+	}
+	if got[2].ID != "CHK-task-skew-1" || !strings.Contains(got[2].Question, "`old_key`") ||
+		!strings.Contains(got[2].Question, "deploy") {
+		t.Errorf("task-skew: %q / %q", got[2].ID, got[2].Question)
+	}
+	if got[3].ID != "CHK-migration-residue-1" || !strings.Contains(got[3].Question, "`legacy_kind`") ||
+		!strings.Contains(got[3].Question, "survivor") {
+		t.Errorf("migration-residue: %q / %q", got[3].ID, got[3].Question)
+	}
+	// Both wiring directions share the wiring template/slug.
+	got = BuildRequiredChecks([]types.LineComment{gateAlertFixture("wiring-dewired", "app/page.tsx")}, nil, nil)
+	if len(got) != 1 || got[0].ID != "CHK-wiring-1" || !strings.Contains(got[0].Question, "`OrphanWidget`") {
+		t.Errorf("de-wired direction: %+v", got)
+	}
+	// Every round-3 template carries the verdict/evidence contract.
+	for _, c := range BuildRequiredChecks(gates, nil, nil) {
+		if !strings.Contains(c.Question, "VIOLATED") || !strings.Contains(c.Question, "SAFE") ||
+			!strings.Contains(c.Question, "file:line") {
+			t.Errorf("%s: missing verdict contract: %q", c.ID, c.Question)
+		}
 	}
 }
 
