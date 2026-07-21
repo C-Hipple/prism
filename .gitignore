@@ -13,7 +13,8 @@ reviews/
 
 # Environment files (keep .env.example)
 .env
-.env.docker
+.env.*
+!.env.example
 
 # Logs and debug files
 *.log

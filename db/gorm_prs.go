@@ -43,6 +43,7 @@ func prModelToPR(m *PRModel) *PR {
 		CriticalCount:   m.CriticalCount,
 		MediumCount:     m.MediumCount,
 		LowCount:        m.LowCount,
+		ReviewVerdict:   m.ReviewVerdict,
 		Notes:           m.Notes,
 		GitHubUpdatedAt: m.GitHubUpdatedAt,
 		ErrorMessage:    m.ErrorMessage,
@@ -81,6 +82,7 @@ func prToPRModel(p *PR) *PRModel {
 		CriticalCount:   p.CriticalCount,
 		MediumCount:     p.MediumCount,
 		LowCount:        p.LowCount,
+		ReviewVerdict:   p.ReviewVerdict,
 		Notes:           p.Notes,
 		GitHubUpdatedAt: p.GitHubUpdatedAt,
 		ErrorMessage:    p.ErrorMessage,
@@ -181,10 +183,10 @@ func (g *GormDB) BatchUpsertPRs(prs []*PR) error {
 }
 
 // MarkPRCompleted atomically transitions a PR to "completed" and records the
-// review's persisted location + importance counts. Uses an explicit UPDATE
-// (not an upsert) so it can't be defeated by a concurrent stale-read from
-// the polling cycle.
-func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int) error {
+// review's persisted location + importance counts + parsed verdict. Uses an
+// explicit UPDATE (not an upsert) so it can't be defeated by a concurrent
+// stale-read from the polling cycle.
+func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string) error {
 	now := time.Now().UTC()
 
 	// Diagnostic: read status before the UPDATE so we know what we were
@@ -202,6 +204,7 @@ func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, re
 			"critical_count":   critical,
 			"medium_count":     medium,
 			"low_count":        low,
+			"review_verdict":   verdict,
 			"error_message":    "",
 		})
 	if res.Error != nil {

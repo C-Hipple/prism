@@ -1,0 +1,101 @@
+@use '../../styles/abstracts/variables' as *;
+
+// Compact per-finding triage list rendered inside the ReviewLinkMenu panel.
+// Deliberately minimal: this is label harvesting, not a review UI.
+.finding-triage {
+  &__list {
+    padding: 0 $spacing-sm $spacing-xs;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+
+  &__meta {
+    color: $color-text-secondary;
+    font-size: $font-size-xs;
+    padding: $spacing-xs 0;
+  }
+
+  &__finding {
+    padding: $spacing-xs 0;
+    border-top: 1px solid $color-border;
+
+    &:first-child {
+      border-top: none;
+    }
+  }
+
+  &__loc {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: $font-size-xs;
+    color: $color-text-secondary;
+    word-break: break-all;
+  }
+
+  &__comment {
+    font-size: $font-size-xs;
+    color: $color-text-primary;
+    margin: 2px 0 $spacing-xs;
+  }
+
+  &__state {
+    font-size: $font-size-xs;
+    color: $color-text-secondary;
+    font-style: italic;
+
+    &--dismissed {
+      color: $color-text-muted;
+    }
+
+    &--acknowledged {
+      color: $color-warning;
+    }
+  }
+
+  &__actions,
+  &__reason-row {
+    display: flex;
+    align-items: center;
+    gap: $spacing-xs;
+  }
+
+  &__reason-input {
+    flex: 1;
+    min-width: 0;
+    font-size: $font-size-xs;
+    padding: 2px $spacing-xs;
+    background: $color-bg-primary;
+    color: $color-text-primary;
+    border: 1px solid $color-border;
+    border-radius: $radius-sm;
+  }
+
+  &__btn {
+    font-size: $font-size-xs;
+    padding: 2px $spacing-sm;
+    background: transparent;
+    color: $color-text-primary;
+    border: 1px solid $color-border;
+    border-radius: $radius-sm;
+    cursor: pointer;
+    transition: background-color $transition-fast;
+
+    &:hover:not(:disabled) {
+      background: $color-bg-hover;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    &--danger {
+      color: $color-error;
+    }
+  }
+
+  &__error {
+    color: $color-error;
+    font-size: $font-size-xs;
+    padding-top: $spacing-xs;
+  }
+}

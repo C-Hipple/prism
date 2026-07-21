@@ -227,6 +227,20 @@ Include exactly one "SUMMARY" entry summarizing your overall take + verdict (app
 If you find no issues worth flagging, return a single SUMMARY entry only.
 `
 
+// promptRequiredChecksContract heads the REQUIRED CHECKS block that
+// buildAgentPromptContent emits when the required-checks feature is on and
+// checks fired for this PR (see checks.go). The per-check "- CHK-id: question"
+// lines follow it. The answer grammar here must stay in lockstep with
+// checkAnswerRe and checkFilePath in checks.go.
+const promptRequiredChecksContract = `
+--- REQUIRED CHECKS (answer each; an unanswered check is escalated automatically) ---
+For each check below, include one object in the SAME findings JSON array with:
+- "file_path": "CHECK"
+- "line_number": 0
+- "comment_body": exactly '<CHK-id> | VIOLATED|SAFE|NOT-APPLICABLE | EVIDENCE: <file:line read or command run + result> | <one-sentence reason>'
+SAFE and NOT-APPLICABLE require evidence from THIS PR's code — a check's a-priori implausibility is not evidence. VIOLATED additionally requires a normal finding at the defect's file:line stating the failure mechanism.
+`
+
 // promptClassification is a fmt format string; %s placeholders receive
 // prBody, fileContext, diff, and the indexed comment list in that order.
 const promptClassification = `You are an expert software engineer tasked with classifying the importance of code review comments.

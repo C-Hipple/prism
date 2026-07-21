@@ -6,6 +6,7 @@ import (
 	gh "github.com/google/go-github/v57/github"
 
 	"pr-review-server/github"
+	"pr-review-server/pkg/reviewer/payload"
 	"pr-review-server/pkg/reviewer/service"
 	"pr-review-server/pkg/reviewer/types"
 )
@@ -99,6 +100,23 @@ type ReviewResult struct {
 	// agent prompt (and which were excluded by the leave-one-out rule) so the
 	// sidecar can attribute catches. Zero value when the feature is off.
 	BugMemory service.BugMemoryMatch
+
+	// Checks carries the required-check funnel telemetry from the agent
+	// stage (see service/checks.go). Zero value when the feature is off.
+	Checks service.RequiredCheckTelemetry
+
+	// GateAlerts is every deterministic alert that fed the review (mechanical
+	// gate firings + required-check escalations), pre-merge. It exists solely
+	// for payload.Build's no-swallow assertion: each alert must still be
+	// traceable in the merged findings, or the sidecar build logs an ERROR
+	// naming the swallowed alert. Nil when no deterministic signal fired.
+	GateAlerts []types.LineComment
+
+	// Carried is the cross-review carry-forward telemetry (which prior
+	// review was consulted, findings carried in vs dropped). Nil when
+	// CARRY_FORWARD_FINDINGS is off or no usable prior review exists, so
+	// the sidecar stays byte-identical to a carry-less run.
+	Carried *payload.CarryForwardInfo
 }
 
 // ReviewGeneratorConfig contains configuration for generating a review

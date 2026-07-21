@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -15,14 +16,36 @@ import (
 	"google.golang.org/api/option"
 )
 
-// Pro is pinned to the 3.1 preview (the -latest alias still resolves to 2.5
-// Pro while no stable 3.x Pro exists). Flash stays on the stable alias — a
-// 3.5-flash swap was evaluated and rejected: label flips were within
-// single-model sampling noise.
+// Default Gemini model names. Override at runtime with the
+// GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL environment variables;
+// the defaults below apply when those are unset or empty.
+// Pro defaults to the 3.1 preview (the -latest alias still resolves to
+// 2.5 Pro while no stable 3.x Pro exists). Flash stays on the stable
+// alias — a 3.5-flash swap was evaluated and rejected: label flips were
+// within single-model sampling noise.
 const (
-	FlashModel = "gemini-flash-latest"
-	ProModel   = "gemini-3.1-pro-preview"
+	DefaultFlashModel = "gemini-flash-latest"
+	DefaultProModel   = "gemini-3.1-pro-preview"
 )
+
+// FlashModelName returns the flash model name, preferring the
+// GEMINI_FLASH_MODEL environment variable over DefaultFlashModel.
+func FlashModelName() string {
+	return modelNameFromEnv("GEMINI_FLASH_MODEL", DefaultFlashModel)
+}
+
+// ProModelName returns the pro model name, preferring the
+// GEMINI_PRO_MODEL environment variable over DefaultProModel.
+func ProModelName() string {
+	return modelNameFromEnv("GEMINI_PRO_MODEL", DefaultProModel)
+}
+
+func modelNameFromEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
 
 // IClient defines the interface for an LLM client.
 type IClient interface {
@@ -58,7 +81,9 @@ func NewClient(provider LLMProvider, apiKey string, useFlash bool, verbose bool)
 	}
 }
 
-// NewGeminiClient creates a new Gemini API client.
+// NewGeminiClient creates a new Gemini API client. The model name resolves
+// from the GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL environment variables when
+// set, falling back to the package defaults.
 func NewGeminiClient(apiKey string, useFlash bool, verbose bool) *Client {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
@@ -66,14 +91,12 @@ func NewGeminiClient(apiKey string, useFlash bool, verbose bool) *Client {
 		log.Fatal(err)
 	}
 
-	var model *genai.GenerativeModel
+	modelName := ProModelName()
 	if useFlash {
-		color.White("Using %s model.", FlashModel)
-		model = client.GenerativeModel(FlashModel)
-	} else {
-		color.White("Using %s model.", ProModel)
-		model = client.GenerativeModel(ProModel)
+		modelName = FlashModelName()
 	}
+	color.White("Using %s model.", modelName)
+	model := client.GenerativeModel(modelName)
 
 	return &Client{genaiClient: model, useFlash: useFlash, verbose: verbose}
 }

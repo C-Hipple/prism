@@ -1,6 +1,7 @@
 package payload
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -271,6 +272,95 @@ func TestToCompactMarkdown_OmitsEmptyHunkAndSource(t *testing.T) {
 	}
 	if strings.Contains(out, "SOURCE CONTEXT") {
 		t.Errorf("should omit SOURCE CONTEXT when empty:\n%s", out)
+	}
+}
+
+// The optional required_checks block must serialize its funnel counters and
+// stay absent when the feature issued no checks (sidecar byte-compat with
+// checkless builds).
+func TestPayload_RequiredChecksJSON(t *testing.T) {
+	p := Build("o", "r", 1, "sha", nil, "", nil)
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "required_checks") {
+		t.Errorf("unset required_checks must be omitted: %s", data)
+	}
+
+	p.RequiredChecks = &RequiredChecksInfo{Issued: 3, Answered: 2, Violated: 1, EvidenceOK: 1}
+	data, err = json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"checks_issued":3`, `"checks_answered":2`, `"checks_violated":1`, `"checks_evidence_ok":1`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("marshaled payload missing %s: %s", want, data)
+		}
+	}
+}
+
+func TestPayload_CarriedFindingsJSON(t *testing.T) {
+	p := Build("o", "r", 1, "sha", nil, "", nil)
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "carried_findings") {
+		t.Errorf("unset carried_findings must be omitted: %s", data)
+	}
+
+	p.CarriedFindings = &CarryForwardInfo{FromSHA: "abc1234", CarriedIn: 2, CarriedDropped: 1}
+	data, err = json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"from_sha":"abc1234"`, `"carried_in":2`, `"carried_dropped":1`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("marshaled payload missing %s: %s", want, data)
+		}
+	}
+}
+
+// ToLineComments must round-trip what Build normalized: severity back to the
+// upper-case Importance enum ("unknown" to empty — never invent a severity),
+// provenance verbatim, context fields dropped.
+func TestToLineComments_RoundTrip(t *testing.T) {
+	comments := []types.LineComment{
+		{FilePath: "SUMMARY", LineNumber: 0, CommentBody: "verdict"},
+		{FilePath: "a.go", LineNumber: 10, Importance: "CRITICAL", CommentBody: "crash"},
+		{FilePath: "b.go", LineNumber: 20, Importance: "medium", CommentBody: "leak"},
+		{FilePath: "c.go", LineNumber: 30, Importance: "weird", CommentBody: "??"},
+	}
+	p := Build("o", "r", 1, "sha", comments, "", nil)
+	got := p.ToLineComments()
+	if len(got) != len(comments) {
+		t.Fatalf("want %d comments, got %d", len(comments), len(got))
+	}
+	byFile := map[string]types.LineComment{}
+	for _, c := range got {
+		byFile[c.FilePath] = c
+	}
+	if c := byFile["a.go"]; c.Importance != "CRITICAL" || c.LineNumber != 10 || c.CommentBody != "crash" {
+		t.Errorf("a.go round-trip mangled: %+v", c)
+	}
+	if c := byFile["b.go"]; c.Importance != "MEDIUM" {
+		t.Errorf("b.go: lower-case severity should round-trip to MEDIUM, got %q", c.Importance)
+	}
+	if c := byFile["c.go"]; c.Importance != "" {
+		t.Errorf("c.go: unknown severity must round-trip to empty, got %q", c.Importance)
+	}
+	// Build stamps provenance (DeriveProvenance); the round-trip keeps it.
+	if c := byFile["a.go"]; c.Provenance == "" {
+		t.Errorf("a.go: provenance should round-trip, got empty")
+	}
+
+	if got := (Payload{}).ToLineComments(); got != nil {
+		t.Errorf("empty payload should yield nil, got %+v", got)
 	}
 }
 

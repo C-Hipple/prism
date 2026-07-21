@@ -40,6 +40,12 @@ type AgentConfig struct {
 	// matcher excludes entries sourced from the PR under review; see
 	// bugmemory.go.
 	BugMemory *BugMemoryLibrary
+
+	// RequiredChecks converts fired gates + matched memory entries into
+	// forced-choice checks the agent must answer with evidence, enforced
+	// deterministically post-parse (see checks.go). Off by default; when off
+	// the prompt and outputs are byte-identical to a checkless run.
+	RequiredChecks bool
 }
 
 // AgentReview is the result of a successful agent run.
@@ -47,9 +53,17 @@ type AgentReview struct {
 	Comments  []types.LineComment // parsed from the agent's final JSON response
 	Gates     []types.LineComment // mechanical gate findings (advisory, provenance "mechanical")
 	BugMemory BugMemoryMatch      // which memory entries were injected/excluded (telemetry)
-	RawFinal  string              // the agent's final result text (pre-parse, for debugging)
-	CloneDir  string              // path to the per-invocation clone (kept for inspection)
-	LogPath   string              // path to the raw stream-json file
+
+	// Checks and CheckFindings carry the required-check enforcement output
+	// (see checks.go): funnel telemetry, and the deterministic escalations
+	// the caller merges as a lower-priority FindingSet. Both are zero-valued
+	// when the feature is off.
+	Checks        RequiredCheckTelemetry
+	CheckFindings []types.LineComment
+
+	RawFinal string // the agent's final result text (pre-parse, for debugging)
+	CloneDir string // path to the per-invocation clone (kept for inspection)
+	LogPath  string // path to the raw stream-json file
 }
 
 // Spawner abstracts subprocess creation so tests can stub the `claude` CLI.
@@ -155,7 +169,22 @@ func RunAgentReview(
 			logPrefix, memMatch.Matched, memMatch.Excluded, memMatch.Version)
 	}
 
-	prompt, err := buildAgentPromptContent(geminiComments, gates, memEntries)
+	// Required checks: forced-choice questions derived from the gates and
+	// memory entries above, answered in the findings JSON and enforced
+	// post-parse. Feature-gated; an empty list leaves the prompt unchanged.
+	var checks []RequiredCheck
+	if agentCfg.RequiredChecks {
+		checks = BuildRequiredChecks(gates, memEntries, diffFiles)
+	}
+	if len(checks) > 0 {
+		ids := make([]string, len(checks))
+		for i, c := range checks {
+			ids[i] = c.ID
+		}
+		log.Printf("%s required checks issued: %v", logPrefix, ids)
+	}
+
+	prompt, err := buildAgentPromptContent(geminiComments, gates, memEntries, checks)
 	if err != nil {
 		return nil, fmt.Errorf("agent: build prompt: %w", err)
 	}
@@ -245,16 +274,37 @@ func RunAgentReview(
 			CommentBody: parseResult.finalOutput,
 		}}
 	}
+
+	// Required-check enforcement must run here, while the worktree still
+	// exists — the evidence validator stats cited paths against it. A parse
+	// failure above means no CHECK answers survive, so every issued check
+	// escalates as unanswered (the safe default).
+	var checkTel RequiredCheckTelemetry
+	var checkFindings []types.LineComment
+	if len(checks) > 0 {
+		var answers []CheckAnswer
+		comments, answers = ParseCheckAnswers(comments)
+		diffPaths := make([]string, len(diffFiles))
+		for i, f := range diffFiles {
+			diffPaths[i] = f.Path
+		}
+		comments, gates, checkFindings, checkTel = EnforceRequiredChecks(checks, answers, comments, gates, diffPaths, cloneDir)
+		log.Printf("%s required checks: issued=%d answered=%d violated=%d evidence_ok=%d escalated=%d",
+			logPrefix, checkTel.ChecksIssued, checkTel.ChecksAnswered, checkTel.ChecksViolated,
+			checkTel.ChecksEvidenceOK, len(checkFindings))
+	}
 	log.Printf("%s complete in %s (turns=%d, comments=%d)",
 		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments))
 
 	return &AgentReview{
-		Comments:  comments,
-		Gates:     gates,
-		BugMemory: memMatch,
-		RawFinal:  parseResult.finalOutput,
-		CloneDir:  cloneDir,
-		LogPath:   logPath,
+		Comments:      comments,
+		Gates:         gates,
+		BugMemory:     memMatch,
+		Checks:        checkTel,
+		CheckFindings: checkFindings,
+		RawFinal:      parseResult.finalOutput,
+		CloneDir:      cloneDir,
+		LogPath:       logPath,
 	}, nil
 }
 
@@ -332,9 +382,10 @@ func matchBracket(s string, start int) int {
 
 // buildAgentPromptContent assembles the agent prompt: the static template,
 // the mechanical-gate alerts (if any), the bug-history section (if any
-// memory entries matched), then a JSON block of Gemini comments. With no
-// gates and no matches the prompt is byte-identical to a memoryless build.
-func buildAgentPromptContent(geminiComments, gates []types.LineComment, bugHistory []BugMemoryEntry) (string, error) {
+// memory entries matched), the required-checks block (if the feature issued
+// any), then a JSON block of Gemini comments. With no gates, no matches and
+// no checks the prompt is byte-identical to a memoryless, checkless build.
+func buildAgentPromptContent(geminiComments, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
 	commentsJSON, err := json.MarshalIndent(geminiComments, "", "  ")
 	if err != nil {
 		return "", err
@@ -348,6 +399,7 @@ func buildAgentPromptContent(geminiComments, gates []types.LineComment, bugHisto
 		}
 	}
 	b.WriteString(bugMemorySection(bugHistory))
+	b.WriteString(requiredChecksSection(checks))
 	b.WriteString("\n--- GEMINI COMMENTS (JSON) ---\n")
 	b.Write(commentsJSON)
 	return b.String(), nil
@@ -454,6 +506,26 @@ func cloneForAgent(ctx context.Context, cloneRoot, dir, owner, repo, defaultBran
 		return noopCleanup, fmt.Errorf("git fetch pr (cache): %w (%s)", err, redactToken(out, token))
 	}
 	log.Printf("%s git fetch DONE in %s", logPrefix, time.Since(t1))
+
+	// Step 2b: fetch the PR's base branch into the cache. --depth implies
+	// --single-branch, so the shared cache only tracks the branch it was
+	// initialized with: without this, origin/<base> never exists for a PR
+	// based on any other branch (stacked PRs — or every default-base PR when
+	// the cache was initialized by a stacked one), and the deterministic
+	// layer's diff (gates, bug memory, required checks) silently degrades to
+	// "no signal". Also keeps origin/<base> fresh as the base moves. A
+	// separate best-effort fetch, not folded into the PR fetch above: the
+	// review itself only needs the PR head, and diffFilesForWorktree has its
+	// own recovery path if this fails (e.g. a deleted base branch).
+	if defaultBranch != "" {
+		baseArgs := authHeaderArgs(token)
+		baseArgs = append(baseArgs, "fetch", "--quiet", "--depth", "200", "origin",
+			fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", defaultBranch, defaultBranch))
+		if out, err := runGit(ctx, cacheDir, baseArgs...); err != nil {
+			log.Printf("%s WARN: base-branch fetch (%s): %v (%s) — deterministic layer may find no diff base",
+				logPrefix, defaultBranch, err, redactToken(out, token))
+		}
+	}
 
 	// Step 3: create a worktree for this review at the requested commit.
 	// Worktrees share the cache's object store, so this is near-instant.

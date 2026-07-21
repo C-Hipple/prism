@@ -1,4 +1,21 @@
 {{define "report-content"}}
+    {{if .DeterministicAlerts}}
+    <div class="deterministic-alerts">
+        <h2>Deterministic alerts</h2>
+        <p class="deterministic-alerts-note">Zero-LLM signals from mechanical gates and required-check enforcement. Each fired on this PR's diff; verify each one manually — the review prose below cannot clear them.</p>
+        {{range .DeterministicAlerts}}
+        <div class="deterministic-alert">
+            <div class="deterministic-alert-meta">
+                <span class="alert-badge alert-provenance">{{.Provenance}}</span>
+                <span class="alert-location">{{.FilePath}}{{if .LineNumber}}:{{.LineNumber}}{{end}}</span>
+                {{if .Verdict}}<span class="alert-badge alert-verdict alert-verdict-{{.VerdictClass}}">{{if .CheckID}}{{.CheckID}} · {{end}}{{.Verdict}}{{if .Evidence}} ({{.Evidence}}){{end}}</span>{{end}}
+            </div>
+            <div class="deterministic-alert-body">{{.Body | markdownify}}</div>
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+
     <div class="pr-description">
         <h2>PR Description</h2>
         {{.PRBody}}

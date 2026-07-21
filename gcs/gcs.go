@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -52,9 +53,48 @@ func ReviewJSONFileName(htmlFilename string) string {
 	return htmlFilename + ".json"
 }
 
+// archiveOnOverwrite reports whether overwritten review artifacts should be
+// preserved under archive/ first (REVIEW_HISTORY_ARCHIVE=true). Read per call
+// so tests can toggle it; unset keeps today's overwrite-in-place behavior.
+//
+// Rationale: review objects are per-SHA, so re-pushes never collide — but a
+// force re-review of the SAME SHA overwrites its artifacts in place, which
+// has permanently destroyed human-scored baselines before. Archiving the old
+// generation costs one server-side copy on the rare manual re-review.
+func archiveOnOverwrite() bool {
+	return os.Getenv("REVIEW_HISTORY_ARCHIVE") == "true"
+}
+
+// archiveExisting best-effort copies the current generation of filename to
+// archive/<filename>.<updated-unix-ts> before an overwrite. archive/ objects
+// never match ListReviewsForPR's prefix, so history stays out of listings.
+// Failures are logged and swallowed — archival must never block a review.
+func (c *Client) archiveExisting(ctx context.Context, filename string) {
+	if !archiveOnOverwrite() {
+		return
+	}
+	src := c.bucket.Object(filename)
+	attrs, err := src.Attrs(ctx)
+	if err == storage.ErrObjectNotExist {
+		return // first write, nothing to preserve
+	}
+	if err != nil {
+		log.Printf("[GCS] WARN: archive check for %s failed: %v", filename, err)
+		return
+	}
+	archiveName := fmt.Sprintf("archive/%s.%d", filename, attrs.Updated.Unix())
+	if _, err := c.bucket.Object(archiveName).CopierFrom(src).Run(ctx); err != nil {
+		log.Printf("[GCS] WARN: archive copy %s -> %s failed: %v", filename, archiveName, err)
+		return
+	}
+	log.Printf("[GCS] Archived overwritten object: gs://%s/%s", c.bucketName, archiveName)
+}
+
 // UploadReview uploads review content to GCS and returns the object path.
 func (c *Client) UploadReview(ctx context.Context, owner, repo string, prNumber int, commitSHA string, content []byte) (string, error) {
 	filename := ReviewFileName(owner, repo, prNumber, commitSHA)
+
+	c.archiveExisting(ctx, filename)
 
 	obj := c.bucket.Object(filename)
 	writer := obj.NewWriter(ctx)
@@ -85,6 +125,8 @@ func (c *Client) UploadReview(ctx context.Context, owner, repo string, prNumber 
 // policy as UploadReview so a regenerated review's sidecar is picked up by
 // callers on next fetch.
 func (c *Client) UploadReviewSidecar(ctx context.Context, filename, contentType string, content []byte) error {
+	c.archiveExisting(ctx, filename)
+
 	obj := c.bucket.Object(filename)
 	writer := obj.NewWriter(ctx)
 	writer.ContentType = contentType

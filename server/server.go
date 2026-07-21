@@ -109,6 +109,9 @@ type PRResponse struct {
 	CriticalCount int `json:"critical_count"` // Number of CRITICAL importance comments
 	MediumCount   int `json:"medium_count"`   // Number of MEDIUM importance comments
 	LowCount      int `json:"low_count"`      // Number of LOW importance comments
+	// Overall AI review verdict parsed from the SUMMARY entry:
+	// "request_changes", "approve_suggestions", "approve", or "" (unknown)
+	ReviewVerdict string `json:"review_verdict"`
 	// User notes
 	Notes string `json:"notes"`
 	// Populated when Status=="error".
@@ -259,6 +262,7 @@ func (s *Server) Start() error {
 	http.Handle("/api/prs/notes", withAuth(s.handleUpdatePRNotes))
 	http.Handle("/api/prs/trigger-review", withAuth(s.handleTriggerReview))
 	http.Handle("/api/prs/generate-review", withAuth(s.handleGenerateReview))
+	http.Handle(findingOutcomesPath, withAuth(s.handleFindingOutcomes))
 	http.Handle("/api/poll/trigger", withAuth(s.handleTriggerPoll))
 	http.Handle("/api/status", withAuth(s.handleStatus))
 	http.Handle("/api/reviewer-health", withAuth(s.handleReviewerHealth))
@@ -395,6 +399,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			CriticalCount:   dbPR.CriticalCount,
 			MediumCount:     dbPR.MediumCount,
 			LowCount:        dbPR.LowCount,
+			ReviewVerdict:   dbPR.ReviewVerdict,
 			Notes:           notes,
 			ErrorMessage:    dbPR.ErrorMessage,
 		})
@@ -1500,6 +1505,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		CriticalCount:   pr.CriticalCount,
 		MediumCount:     pr.MediumCount,
 		LowCount:        pr.LowCount,
+		ReviewVerdict:   pr.ReviewVerdict,
 		Notes:           notes,
 		ErrorMessage:    pr.ErrorMessage,
 	}

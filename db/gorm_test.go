@@ -219,7 +219,7 @@ func TestGormDB_UpsertPR_DoesNotClobberReviewState(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mark it completed via the dedicated setter.
-	err = db.MarkPRCompleted("owner", "repo", 1, "abc123", "review.html", 1, 2, 3)
+	err = db.MarkPRCompleted("owner", "repo", 1, "abc123", "review.html", 1, 2, 3, "request_changes")
 	require.NoError(t, err)
 
 	// The poller does a metadata refresh with a stale read still showing pending.
@@ -235,7 +235,40 @@ func TestGormDB_UpsertPR_DoesNotClobberReviewState(t *testing.T) {
 	assert.Equal(t, "completed", fetched.Status, "status must not be clobbered by a stale poller upsert")
 	assert.Equal(t, "review.html", fetched.ReviewHTMLPath, "review_path must not be cleared")
 	assert.Equal(t, 1, fetched.CriticalCount, "critical_count must not be reset")
+	assert.Equal(t, "request_changes", fetched.ReviewVerdict, "review_verdict must not be cleared")
 	assert.Equal(t, "Updated Title", fetched.Title, "title (whitelisted) should still update")
+}
+
+// MarkPRCompleted round-trip: the verdict is persisted with the counts, and
+// a later completion with an empty verdict clears it (verdict tracks the
+// current review, exactly like the counts).
+func TestGormDB_MarkPRCompleted_VerdictRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	err := db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 2,
+		LastCommitSHA: "abc123", Status: "generating",
+	})
+	require.NoError(t, err)
+
+	err = db.MarkPRCompleted("owner", "repo", 2, "abc123", "review.html", 1, 0, 0, "request_changes")
+	require.NoError(t, err)
+
+	fetched, err := db.GetPR("owner", "repo", 2)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	assert.Equal(t, "completed", fetched.Status)
+	assert.Equal(t, "request_changes", fetched.ReviewVerdict)
+
+	// Re-review of a new commit with no parseable verdict clears the field —
+	// a stale "request_changes" badge must not outlive the review it graded.
+	err = db.MarkPRCompleted("owner", "repo", 2, "def456", "review2.html", 0, 0, 0, "")
+	require.NoError(t, err)
+
+	fetched, err = db.GetPR("owner", "repo", 2)
+	require.NoError(t, err)
+	assert.Equal(t, "", fetched.ReviewVerdict, "empty verdict must overwrite the previous one")
 }
 
 func TestGormDB_UpdatePRStatus(t *testing.T) {

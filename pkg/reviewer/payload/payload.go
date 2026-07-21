@@ -10,6 +10,7 @@ package payload
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,6 +44,30 @@ type Payload struct {
 	// pattern-library entries for this review; consumers use it to attribute
 	// findings to injected priors.
 	BugMemory *BugMemoryInfo `json:"bug_memory,omitempty"`
+
+	// RequiredChecks is present when the required-checks feature issued
+	// forced-choice checks for this review; consumers use it to reconstruct
+	// the issued → answered → violated/evidence-ok conversion funnel.
+	RequiredChecks *RequiredChecksInfo `json:"required_checks,omitempty"`
+
+	// CarriedFindings is present when the carry-forward feature
+	// (CARRY_FORWARD_FINDINGS) ran for this review: which prior review it
+	// pulled from and how many findings passed / were dropped by the
+	// staleness filter. Absent when the feature is off or no prior review
+	// exists, so legacy sidecars are byte-identical.
+	CarriedFindings *CarryForwardInfo `json:"carried_findings,omitempty"`
+}
+
+// CarryForwardInfo is the cross-review carry-forward telemetry.
+//
+// CarriedIn counts prior findings admitted into the merge (cited file
+// untouched between FromSHA and the reviewed commit); CarriedDropped counts
+// candidates the staleness filter rejected (file modified by the new push,
+// or the inter-push comparison was unreliable and everything was dropped).
+type CarryForwardInfo struct {
+	FromSHA        string `json:"from_sha"`
+	CarriedIn      int    `json:"carried_in"`
+	CarriedDropped int    `json:"carried_dropped"`
 }
 
 // BugMemoryInfo mirrors the service-layer match telemetry without importing it.
@@ -50,6 +75,15 @@ type BugMemoryInfo struct {
 	Version         string   `json:"version"`
 	Matched         []string `json:"matched"`
 	ExcludedLeakage []string `json:"excluded_leakage,omitempty"`
+}
+
+// RequiredChecksInfo mirrors the service-layer required-check funnel
+// telemetry without importing it.
+type RequiredChecksInfo struct {
+	Issued     int `json:"checks_issued"`
+	Answered   int `json:"checks_answered"`
+	Violated   int `json:"checks_violated"`
+	EvidenceOK int `json:"checks_evidence_ok"`
 }
 
 // Counts is the per-severity tally. Mirrors the columns on the PR row.
@@ -69,7 +103,14 @@ type Counts struct {
 // consumer reconstruct "what changed at this line + what surrounds it" in
 // one trip.
 type Finding struct {
-	Severity     string   `json:"severity"` // critical | medium | low | unknown
+	Severity string `json:"severity"` // critical | medium | low | unknown
+	// Provenance identifies which review pass produced the finding: "agent",
+	// "first-pass", "mechanical", "required-check", or "carried" — carried
+	// findings were re-admitted from an earlier review of the same PR
+	// (unknown labels pass through verbatim). Derived from the merge layer's
+	// provenance markers (see DeriveProvenance); absent only in sidecars
+	// written before the field existed. Additive — schema stays "1".
+	Provenance   string   `json:"provenance,omitempty"`
 	File         string   `json:"file"`
 	Line         int      `json:"line"`
 	Comment      string   `json:"comment"`
@@ -93,6 +134,65 @@ func normalizeSeverity(imp string) string {
 	}
 }
 
+// severityToImportance is the inverse of normalizeSeverity, used when a
+// persisted sidecar's findings are converted back into LineComments (e.g.
+// cross-review carry-forward). "unknown" maps to empty — round-tripping must
+// not invent a severity the original comment never had.
+func severityToImportance(sev string) string {
+	switch sev {
+	case "critical":
+		return "CRITICAL"
+	case "medium":
+		return "MEDIUM"
+	case "low":
+		return "LOW"
+	default:
+		return ""
+	}
+}
+
+// ToLineComments converts the payload's findings back into the LineComment
+// shape the review pipeline operates on. Context fields (diff hunk, source
+// windows) are intentionally dropped — they describe the commit the sidecar
+// was built at, and the consumer re-derives them for its own commit.
+// Provenance round-trips verbatim (it is the prior run's attribution); a
+// consumer re-purposing the findings for a new review (e.g. carry-forward)
+// must re-attribute them itself.
+func (p Payload) ToLineComments() []types.LineComment {
+	if len(p.Findings) == 0 {
+		return nil
+	}
+	out := make([]types.LineComment, 0, len(p.Findings))
+	for _, f := range p.Findings {
+		out = append(out, types.LineComment{
+			FilePath:    f.File,
+			LineNumber:  f.Line,
+			Importance:  severityToImportance(f.Severity),
+			CommentBody: f.Comment,
+			Provenance:  f.Provenance,
+		})
+	}
+	return out
+}
+
+// BuildOption customizes Build. Options are additive so existing call sites
+// keep compiling unchanged.
+type BuildOption func(*buildOptions)
+
+type buildOptions struct {
+	gateAlerts []types.LineComment
+}
+
+// WithGateAlerts supplies the deterministic alerts (mechanical gate firings
+// and required-check escalations) that fed this review. Build asserts that
+// every one of them is represented in the output findings and logs an ERROR
+// naming the alert id for any that are not — a fired deterministic signal
+// must never be dropped silently (no-swallow guarantee). The check is
+// observability-only: it cannot alter the payload.
+func WithGateAlerts(alerts []types.LineComment) BuildOption {
+	return func(o *buildOptions) { o.gateAlerts = alerts }
+}
+
 // Build assembles a Payload from the structured outputs of a review run.
 //
 //   - comments: the structured LineComments the reviewer produced.
@@ -109,7 +209,13 @@ func Build(
 	comments []types.LineComment,
 	diff string,
 	fileContents map[string]string,
+	opts ...BuildOption,
 ) Payload {
+	var o buildOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	findings := make([]Finding, 0, len(comments))
 	var counts Counts
 
@@ -125,10 +231,11 @@ func Build(
 		}
 
 		f := Finding{
-			Severity: sev,
-			File:     c.FilePath,
-			Line:     c.LineNumber,
-			Comment:  c.CommentBody,
+			Severity:   sev,
+			Provenance: DeriveProvenance(c),
+			File:       c.FilePath,
+			Line:       c.LineNumber,
+			Comment:    c.CommentBody,
 		}
 		if diff != "" && c.FilePath != "" && c.LineNumber > 0 {
 			f.DiffHunk = HunkForLine(diff, c.FilePath, c.LineNumber)
@@ -150,6 +257,15 @@ func Build(
 		}
 		return findings[i].Line < findings[j].Line
 	})
+
+	// No-swallow guarantee: every fired deterministic alert the caller
+	// supplied must be represented in the findings. A miss means something
+	// upstream (typically duplicate-collapse in the merge) replaced the
+	// alert's text with unrelated prose — report it loudly, never drop it
+	// silently.
+	for _, a := range MissingAlerts(findings, o.gateAlerts) {
+		log.Printf("[PAYLOAD] ERROR: deterministic alert %s fired but is not represented in the review findings — it was swallowed before the sidecar (no-swallow violation)", AlertID(a))
+	}
 
 	return Payload{
 		SchemaVersion: "1",
