@@ -5,6 +5,29 @@ $panel-width: 240px;
 
 .review-menu__anchor {
   display: inline-flex;
+  // Positioning context for the request-changes verdict badge.
+  position: relative;
+}
+
+// Small red "R" overlapping the View button's top-right corner — shown only
+// when the review's verdict is request-changes. Same palette as the other
+// error affordances ($color-error + white, like .error-message).
+.review-menu__verdict-badge {
+  position: absolute;
+  top: -6px;
+  right: -9px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: $color-error;
+  color: white;
+  font-size: $font-size-xs;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+  pointer-events: none; // let hover/click fall through to the View link
+  // Keep the circle legible against both the row background and hover state.
+  box-shadow: 0 0 0 1px $color-bg-primary;
 }
 
 .review-menu {

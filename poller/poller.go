@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,6 +104,12 @@ type Poller struct {
 	pollCount int
 	// Agent-review subprocess spawner (nil-safe: defaults to the real claude CLI).
 	agentSpawner service.Spawner
+	// compareFilesFn resolves the files changed between two commits of a repo
+	// for the carry-forward staleness filter (nil-safe: defaults to the GitHub
+	// compare API; tests inject a stub). ok=false means the comparison is
+	// unreliable (diverged history, truncated file list, API error) and the
+	// caller must not carry anything forward.
+	compareFilesFn func(ctx context.Context, owner, repo, base, head, token string) (files []string, ok bool)
 	// agentSlots caps concurrent agent reviews per process. Each agent run
 	// holds ~1 GB of /tmp (clone) + claude memory; without a cap, two PRs
 	// triggered close together can exhaust the instance's memory budget.
@@ -339,9 +347,9 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 			firstPassCriticals = append(firstPassCriticals, c)
 		}
 	}
-	merged := service.MergeFindings(
-		service.FindingSet{Provenance: "agent", Comments: agentOut.Comments},
-		service.FindingSet{Provenance: "first-pass", Comments: firstPassCriticals},
+	sets := []service.FindingSet{
+		{Provenance: "agent", Comments: agentOut.Comments},
+		{Provenance: "first-pass", Comments: firstPassCriticals},
 		// Required-check escalations (empty unless REQUIRED_CHECKS is on):
 		// synthesized VIOLATED findings and unanswered memory re-admissions.
 		// Merging as a lower-priority set reuses the provenance note and the
@@ -350,9 +358,26 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		// as the gate alert that spawned it, and the earlier set's phrasing
 		// wins the dedup — the confirmed-defect body must absorb the generic
 		// advisory, not vanish into it.
-		service.FindingSet{Provenance: "required-check", Comments: agentOut.CheckFindings},
-		service.FindingSet{Provenance: "mechanical", Comments: agentOut.Gates},
-	)
+		{Provenance: "required-check", Comments: agentOut.CheckFindings},
+		{Provenance: "mechanical", Comments: agentOut.Gates},
+	}
+	// Cross-review carry-forward (CARRY_FORWARD_FINDINGS, default off): a PR
+	// re-reviewed at a new head has already paid for k independent review
+	// draws, but the dashboard points only at the latest — which can
+	// stochastically LOSE a true finding an earlier draw surfaced. Re-admit
+	// the previous review's findings whose cited file is untouched between
+	// the previously reviewed SHA and this head, as the lowest-priority merge
+	// set: duplicates collapse into this run's phrasing, unique carries get
+	// the provenance note (naming the source SHA) and the MEDIUM cap.
+	carriedSet, carriedInfo := p.carryForwardSet(ctx, pr, gitToken)
+	if len(carriedSet.Comments) > 0 {
+		sets = append(sets, carriedSet)
+	}
+	if carriedInfo != nil {
+		log.Printf("[REVIEWER] PR %d: carry-forward: from=%s carried_in=%d carried_dropped=%d",
+			pr.Number, carriedInfo.FromSHA, carriedInfo.CarriedIn, carriedInfo.CarriedDropped)
+	}
+	merged := service.MergeFindings(sets...)
 	readmitted := len(merged) - len(agentOut.Comments)
 	result.Comments = merged
 	result.ComputeImportanceCounts()
@@ -379,7 +404,250 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		FileContents:  result.FileContents,
 		BugMemory:     agentOut.BugMemory,
 		Checks:        agentOut.Checks,
+		// Copied (not aliased) so the no-swallow check reads the pre-merge
+		// alert set even if a later stage mutates the agent output.
+		GateAlerts: append(append([]types.LineComment{}, agentOut.Gates...), agentOut.CheckFindings...),
+		Carried:    carriedInfo,
 	}, nil
+}
+
+// ---- Cross-review carry-forward (CARRY_FORWARD_FINDINGS) -------------------
+//
+// Review artifacts are per-SHA in GCS, so every reviewed push of a PR leaves
+// a findings sidecar behind. carryForwardSet turns that history into a union:
+// it loads the most recent prior review of the PR, drops findings whose cited
+// file the new push touched (assume addressed; zero-noise rule), and hands
+// the survivors to MergeFindings as the lowest-priority set. Strictly
+// best-effort — any failure logs and degrades to a carry-less review.
+
+// carryForwardEnabled gates the feature. Read per call (not cached at init)
+// so tests can toggle it with t.Setenv; unset keeps reviews byte-identical
+// to a build without the feature.
+func carryForwardEnabled() bool {
+	return os.Getenv("CARRY_FORWARD_FINDINGS") == "true"
+}
+
+// carryForwardSet builds the carried FindingSet for a review of pr at its
+// current head. Returns a zero FindingSet and nil telemetry when the feature
+// is off, no prior review with a sidecar exists, or loading fails.
+func (p *Poller) carryForwardSet(ctx context.Context, pr github.PullRequest, gitToken string) (service.FindingSet, *payload.CarryForwardInfo) {
+	if !carryForwardEnabled() {
+		return service.FindingSet{}, nil
+	}
+	loadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	prior, err := p.loadPriorReviewPayload(loadCtx, pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
+	if err != nil {
+		log.Printf("[REVIEWER] WARN: PR %d: carry-forward: load prior review: %v — carrying nothing", pr.Number, err)
+		return service.FindingSet{}, nil
+	}
+	if prior == nil {
+		return service.FindingSet{}, nil // first review of this PR
+	}
+	fromSHA := prior.CommitSHA
+	if fromSHA == "" {
+		// Pre-schema sidecar without a commit pointer: no way to compute the
+		// inter-push diff, so nothing can be proven untouched.
+		return service.FindingSet{}, nil
+	}
+	candidates := prior.ToLineComments()
+
+	fn := p.compareFilesFn
+	if fn == nil {
+		fn = githubCompareChangedFiles
+	}
+	touched, ok := fn(loadCtx, pr.Owner, pr.Repo, fromSHA, pr.CommitSHA, gitToken)
+	if !ok {
+		// Unreliable inter-push diff (force-push/rebase divergence, truncated
+		// file list, API failure): we cannot prove any file untouched, so
+		// carry nothing. Telemetry still records the attempt; the dropped
+		// count uses the same filter as a real carry (SUMMARY never counts).
+		log.Printf("[REVIEWER] WARN: PR %d: carry-forward: %s..%s comparison unreliable — carrying nothing",
+			pr.Number, fromSHA, pr.CommitSHA)
+		carriable, _ := service.CarryForwardFindings(candidates, nil)
+		return service.FindingSet{}, &payload.CarryForwardInfo{
+			FromSHA:        fromSHA,
+			CarriedDropped: len(carriable),
+		}
+	}
+
+	carried, dropped := service.CarryForwardFindings(candidates, touched)
+	info := &payload.CarryForwardInfo{
+		FromSHA:        fromSHA,
+		CarriedIn:      len(carried),
+		CarriedDropped: dropped,
+	}
+	return service.FindingSet{
+		// The label embeds the source SHA, so the merge's provenance note on
+		// each carried finding deterministically names the review it came from.
+		Provenance: service.CarriedProvenance(fromSHA),
+		Comments:   carried,
+	}, info
+}
+
+// loadPriorReviewPayload returns the findings sidecar of the most recent
+// review of this PR at a commit other than currentSHA, or (nil, nil) when no
+// such review exists (first review, or history predates sidecars).
+func (p *Poller) loadPriorReviewPayload(ctx context.Context, owner, repo string, prNumber int, currentSHA string) (*payload.Payload, error) {
+	if p.gcsClient != nil && p.gcsClient.BucketName() != "" {
+		reviews, err := p.gcsClient.ListReviewsForPR(ctx, owner, repo, prNumber)
+		if err != nil {
+			return nil, fmt.Errorf("list reviews: %w", err)
+		}
+		// Newest first; try a few in case the latest prior review predates
+		// sidecars or its sidecar write failed.
+		sort.SliceStable(reviews, func(i, j int) bool { return reviews[i].CreatedAt.After(reviews[j].CreatedAt) })
+		tried := 0
+		for _, r := range reviews {
+			if isSameCommit(currentSHA, r.CommitSHA) {
+				continue
+			}
+			if tried >= 3 {
+				break
+			}
+			tried++
+			body, err := p.gcsClient.GetReviewContent(ctx, gcs.ReviewJSONFileName(r.Filename))
+			if err != nil {
+				log.Printf("[REVIEWER] carry-forward: no sidecar for prior review %s: %v", r.Filename, err)
+				continue
+			}
+			pl, err := parseSidecarPayload(body)
+			if err != nil {
+				log.Printf("[REVIEWER] carry-forward: bad sidecar for prior review %s: %v", r.Filename, err)
+				continue
+			}
+			return pl, nil
+		}
+		return nil, nil
+	}
+
+	// Local storage: sidecars live next to the HTML in reviewDir under the
+	// same per-SHA naming.
+	entries, err := os.ReadDir(p.reviewDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read reviews dir: %w", err)
+	}
+	prefix := fmt.Sprintf("%s_%s_%d_", owner, repo, prNumber)
+	var newestName string
+	var newestMod time.Time
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		sha := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".json")
+		if isSameCommit(currentSHA, sha) {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if newestName == "" || fi.ModTime().After(newestMod) {
+			newestName, newestMod = name, fi.ModTime()
+		}
+	}
+	if newestName == "" {
+		return nil, nil
+	}
+	body, err := os.ReadFile(filepath.Join(p.reviewDir, newestName))
+	if err != nil {
+		return nil, fmt.Errorf("read sidecar %s: %w", newestName, err)
+	}
+	return parseSidecarPayload(body)
+}
+
+// parseSidecarPayload unmarshals a findings sidecar. A payload with zero
+// findings is valid — a clean prior review is still the PR's most recent
+// assessment, and correctly yields a carry-less run rather than falling
+// through to an older, superseded review.
+func parseSidecarPayload(body []byte) (*payload.Payload, error) {
+	var pl payload.Payload
+	if err := json.Unmarshal(body, &pl); err != nil {
+		return nil, err
+	}
+	return &pl, nil
+}
+
+// isSameCommit compares two commit identifiers that may be truncated to
+// different lengths (review object names carry 7-char SHAs, sidecar payloads
+// full SHAs): they refer to the same commit when one is a prefix of the other.
+func isSameCommit(a, b string) bool {
+	if a == "" || b == "" {
+		return a == b
+	}
+	return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
+}
+
+// githubAPIBaseURL is the GitHub REST endpoint used by the carry-forward
+// compare call. Package variable so tests can point it at a stub server.
+var githubAPIBaseURL = "https://api.github.com"
+
+// githubCompareChangedFiles resolves the files changed between two commits
+// via the GitHub compare API. This is the default compareFilesFn: one
+// authenticated GET, no worktree needed (the agent's worktree is already
+// cleaned up by merge time).
+//
+// ok=false when the answer cannot be trusted as a complete inter-push diff:
+//   - status "diverged"/"behind" (force-push or rebase rewrote history —
+//     the compare's merge-base semantics no longer equal old..new)
+//   - 300 files reported (GitHub truncates the list at 300, so absence of a
+//     file no longer proves it untouched)
+//   - any transport/HTTP/decode error
+func githubCompareChangedFiles(ctx context.Context, owner, repo, base, head, token string) ([]string, bool) {
+	url := fmt.Sprintf("%s/repos/%s/%s/compare/%s...%s", githubAPIBaseURL, owner, repo, base, head)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		log.Printf("[REVIEWER] carry-forward: build compare request: %v", err)
+		return nil, false
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("[REVIEWER] carry-forward: compare %s..%s: %v", base, head, err)
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[REVIEWER] carry-forward: compare %s..%s: HTTP %d", base, head, resp.StatusCode)
+		return nil, false
+	}
+	var body struct {
+		Status string `json:"status"` // ahead | behind | diverged | identical
+		Files  []struct {
+			Filename         string `json:"filename"`
+			PreviousFilename string `json:"previous_filename"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		log.Printf("[REVIEWER] carry-forward: decode compare %s..%s: %v", base, head, err)
+		return nil, false
+	}
+	// "ahead" = base is an ancestor of head (a normal push): the compare's
+	// merge-base diff IS the inter-push diff. "identical" = same tree
+	// (re-review), trivially reliable with zero files.
+	if body.Status != "ahead" && body.Status != "identical" {
+		return nil, false
+	}
+	if len(body.Files) >= 300 {
+		return nil, false
+	}
+	files := make([]string, 0, len(body.Files))
+	for _, f := range body.Files {
+		files = append(files, f.Filename)
+		if f.PreviousFilename != "" {
+			// A rename touches both names; a finding citing either is stale.
+			files = append(files, f.PreviousFilename)
+		}
+	}
+	return files, true
 }
 
 // broadcastPRUpdate helper to send update events
@@ -1017,7 +1285,11 @@ func (p *Poller) saveReviewSidecar(ctx context.Context, filename, contentType st
 // to the same backend the HTML lives in. Errors are logged but swallowed —
 // the HTML review is the canonical artifact.
 func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string, prNumber int, commitSHA, htmlFilename string, rr *ReviewResult) {
-	pl := payload.Build(owner, repo, prNumber, commitSHA, rr.Comments, rr.Diff, rr.FileContents)
+	// GateAlerts arms Build's no-swallow assertion: a fired deterministic
+	// alert that is no longer traceable in the merged findings logs an ERROR
+	// naming the alert (nil/empty when no deterministic signal fired).
+	pl := payload.Build(owner, repo, prNumber, commitSHA, rr.Comments, rr.Diff, rr.FileContents,
+		payload.WithGateAlerts(rr.GateAlerts))
 	if len(rr.BugMemory.Matched) > 0 || len(rr.BugMemory.Excluded) > 0 {
 		pl.BugMemory = &payload.BugMemoryInfo{
 			Version:         rr.BugMemory.Version,
@@ -1036,6 +1308,10 @@ func (p *Poller) writeSidecarBestEffort(ctx context.Context, owner, repo string,
 			EvidenceOK: rr.Checks.ChecksEvidenceOK,
 		}
 	}
+	// Carry-forward telemetry (carried_in / carried_dropped): persisted for
+	// the same reason as the funnels above. Nil (field omitted) when the
+	// feature is off, keeping legacy sidecars byte-identical.
+	pl.CarriedFindings = rr.Carried
 	body, err := json.Marshal(pl)
 	if err != nil {
 		log.Printf("[REVIEWER] WARN: marshal findings sidecar for %s/%s#%d: %v", owner, repo, prNumber, err)
@@ -2116,15 +2392,16 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				log.Printf("[REVIEWER] Review already exists for PR %d commit %s, skipping generation", pr.Number, pr.CommitSHA[:7])
 				// Update database to point to existing review, preserving importance counts
 				filename := gcs.ReviewFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
-				// Get existing importance counts from database
+				// Get existing importance counts + verdict from database
 				existingPR, _ := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-				criticalCount, mediumCount, lowCount := 0, 0, 0
+				criticalCount, mediumCount, lowCount, verdict := 0, 0, 0, ""
 				if existingPR != nil {
 					criticalCount = existingPR.CriticalCount
 					mediumCount = existingPR.MediumCount
 					lowCount = existingPR.LowCount
+					verdict = existingPR.ReviewVerdict
 				}
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount); err != nil {
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
 				} else {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
@@ -2263,11 +2540,15 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				log.Printf("[REVIEWER] STALE REVIEW: PR %d commit changed during generation, but keeping in GCS for history", pr.Number)
 				// Don't update DB - the next poll will generate a new review for the new commit
 			} else {
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount); err != nil {
+				// Parse the overall verdict from the SUMMARY entry; ""
+				// (unknown) when the mock generator supplies no comments or
+				// the SUMMARY has no recognizable verdict phrasing.
+				verdict := service.VerdictFromComments(reviewResult.Comments)
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
 				} else {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
-					log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount)
+					log.Printf("[REVIEWER] Marked PR %d as 'completed' (critical=%d, medium=%d, low=%d, verdict=%q)", pr.Number, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict)
 				}
 			}
 

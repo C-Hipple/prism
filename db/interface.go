@@ -27,6 +27,9 @@ type PR struct {
 	CriticalCount int // Number of CRITICAL importance comments
 	MediumCount   int // Number of MEDIUM importance comments
 	LowCount      int // Number of LOW importance comments
+	// Overall review verdict parsed from the SUMMARY entry:
+	// "request_changes", "approve_suggestions", "approve", or "" (unknown)
+	ReviewVerdict string
 	// User notes (single-user mode)
 	Notes string
 	// Poll economy: last seen updated_at from GitHub search API
@@ -111,6 +114,31 @@ type PRWithUserView struct {
 	ViaTeams     []string // Team names from user_pr_views
 }
 
+// FindingOutcome is a recorded human triage decision on a single review
+// finding: dismissed-with-reason, acknowledged risk, or explicitly
+// unresolved. Keyed by (owner, repo, pr, reviewed sha, fingerprint) —
+// re-deciding the same finding overwrites the prior decision.
+//
+// The persistence methods (UpsertFindingOutcome / GetFindingOutcomesForPR)
+// live on *GormDB only and are deliberately NOT part of the Database
+// interface: the feature is optional (env-gated at the HTTP layer), and
+// callers type-assert for the narrow capability instead of forcing every
+// Database implementation to grow with it.
+type FindingOutcome struct {
+	ID          int
+	RepoOwner   string
+	RepoName    string
+	PRNumber    int
+	ReviewedSHA string
+	Fingerprint string
+	Provenance  string
+	Severity    string
+	Outcome     string // "dismissed", "acknowledged", "unresolved"
+	Reason      string
+	DecidedBy   string
+	DecidedAt   time.Time
+}
+
 // TelemetryEvent represents a single telemetry event for creation
 type TelemetryEvent struct {
 	UserID   int
@@ -167,7 +195,7 @@ type Database interface {
 	SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool) error
 	SetPRAgentReviewing(owner, repo string, prNumber int) error
 	SetPRError(owner, repo string, prNumber int, message string) error
-	MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int) error
+	MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string) error
 	GetAllPRs() ([]PR, error)
 	DeletePR(owner, repo string, prNumber int) error
 	ResetStaleGeneratingPRs(timeoutMinutes int) (int, error)

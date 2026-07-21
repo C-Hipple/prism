@@ -121,7 +121,7 @@ func TestReviewAPI_200_returns_full_payload(t *testing.T) {
 			{Severity: "critical", File: "main.go", Line: 42, Comment: "boom", DiffHunk: "@@ -40,3 +40,3 @@\n-old\n+new"},
 		},
 	})
-	require.NoError(t, database.MarkPRCompleted("owner", "repo", 7, "abc1234deadbeef", filename, 1, 3, 2))
+	require.NoError(t, database.MarkPRCompleted("owner", "repo", 7, "abc1234deadbeef", filename, 1, 3, 2, ""))
 	_ = reviewedAt // touched via DB row below
 
 	w := doReviewAPIGet(t, server, user, "/api/review/owner/repo/7")
@@ -163,7 +163,7 @@ func TestReviewAPI_is_stale_when_head_moved(t *testing.T) {
 		Status:        "pending",
 	}))
 	filename := writeReviewFile(t, dir, "owner", "repo", 8, "aaaaaaa", "<html>old review</html>")
-	require.NoError(t, database.MarkPRCompleted("owner", "repo", 8, "aaaaaaa1111111", filename, 0, 0, 0))
+	require.NoError(t, database.MarkPRCompleted("owner", "repo", 8, "aaaaaaa1111111", filename, 0, 0, 0, ""))
 
 	// Now move HEAD forward without regenerating the review.
 	require.NoError(t, database.SetPRGenerating("owner", "repo", 8, "bbbbbbb2222222", "", "", nil, false))
@@ -200,7 +200,7 @@ func TestReviewAPI_pin_by_sha(t *testing.T) {
 		SchemaVersion: "1",
 		Findings:      []payload.Finding{{Severity: "low", File: "f.go", Line: 1, Comment: "NEW"}},
 	})
-	require.NoError(t, database.MarkPRCompleted("owner", "repo", 9, "bbbbbbb2222", newName, 0, 0, 0))
+	require.NoError(t, database.MarkPRCompleted("owner", "repo", 9, "bbbbbbb2222", newName, 0, 0, 0, ""))
 
 	// No pin → returns the latest review (per DB).
 	w := doReviewAPIGet(t, server, user, "/api/review/owner/repo/9")
@@ -269,7 +269,7 @@ func TestReviewAPI_format_html_returns_raw(t *testing.T) {
 		Status:        "pending",
 	}))
 	filename := writeReviewFile(t, dir, "owner", "repo", 11, "abc1234", "<html>raw passthrough</html>")
-	require.NoError(t, database.MarkPRCompleted("owner", "repo", 11, "abc1234", filename, 0, 0, 0))
+	require.NoError(t, database.MarkPRCompleted("owner", "repo", 11, "abc1234", filename, 0, 0, 0, ""))
 
 	w := doReviewAPIGet(t, server, user, "/api/review/owner/repo/11?format=html")
 
@@ -302,7 +302,7 @@ func TestReviewAPI_format_md_returns_attachment(t *testing.T) {
 			{Severity: "critical", File: "main.go", Line: 42, Comment: "boom", DiffHunk: "@@ -40,3 +40,3 @@\n-old\n+new"},
 		},
 	})
-	require.NoError(t, database.MarkPRCompleted("owner", "repo", 12, "abc1234deadbeef", filename, 1, 0, 0))
+	require.NoError(t, database.MarkPRCompleted("owner", "repo", 12, "abc1234deadbeef", filename, 1, 0, 0, ""))
 
 	w := doReviewAPIGet(t, server, user, "/api/review/owner/repo/12?format=md")
 
@@ -334,7 +334,7 @@ func TestReviewAPI_findings_unavailable_when_no_sidecar(t *testing.T) {
 	}))
 	// HTML only — no sidecar written.
 	filename := writeReviewFile(t, dir, "owner", "repo", 30, "abc1234", "<html>legacy</html>")
-	require.NoError(t, database.MarkPRCompleted("owner", "repo", 30, "abc1234", filename, 0, 0, 0))
+	require.NoError(t, database.MarkPRCompleted("owner", "repo", 30, "abc1234", filename, 0, 0, 0, ""))
 
 	w := doReviewAPIGet(t, server, user, "/api/review/owner/repo/30")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -414,7 +414,7 @@ func TestReviewAPI_200_with_in_flight_true_when_regenerating(t *testing.T) {
 		SchemaVersion: "1",
 		Findings:      []payload.Finding{{Severity: "low", File: "f.go", Line: 1, Comment: "previous"}},
 	})
-	require.NoError(t, database.MarkPRCompleted("owner", "repo", 22, "abc1234", filename, 0, 0, 0))
+	require.NoError(t, database.MarkPRCompleted("owner", "repo", 22, "abc1234", filename, 0, 0, 0, ""))
 	// User triggers a re-review: poller flips to generating, but review_path
 	// stays pointed at the prior html until MarkPRCompleted runs again.
 	require.NoError(t, database.SetPRGenerating("owner", "repo", 22, "abc1234", "", "", nil, false))

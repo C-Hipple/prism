@@ -434,7 +434,7 @@ func (m *MockDatabase) SetPRError(owner, repo string, prNumber int, message stri
 	return nil
 }
 
-func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int) error {
+func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := prDBKey(owner, repo, prNumber)
@@ -447,6 +447,7 @@ func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitS
 		pr.CriticalCount = critical
 		pr.MediumCount = medium
 		pr.LowCount = low
+		pr.ReviewVerdict = verdict
 		pr.ErrorMessage = ""
 	}
 	return nil

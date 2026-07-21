@@ -204,6 +204,14 @@ func GenerateReportWithContext(comments []types.LineComment, diff string, prNumb
 		shortCommitSHA = commitSHA[:7]
 	}
 
+	// Pinned deterministic-alerts section (SURFACE_ALERTS, default off):
+	// with the flag unset DeterministicAlerts stays nil and the template
+	// renders nothing, keeping the report byte-identical to a gateless build.
+	var deterministicAlerts []AlertView
+	if surfaceAlertsEnabled() {
+		deterministicAlerts = buildDeterministicAlerts(comments)
+	}
+
 	reportData := struct {
 		PRNumber             int
 		PRURL                string
@@ -214,6 +222,7 @@ func GenerateReportWithContext(comments []types.LineComment, diff string, prNumb
 		SummaryComments      []CommentView
 		GeneralComments      []CommentView
 		AdjacentComments     []CommentView
+		DeterministicAlerts  []AlertView
 		RawDiff              string
 		ModelName            string
 		PromptTokenCount     int32
@@ -235,6 +244,7 @@ func GenerateReportWithContext(comments []types.LineComment, diff string, prNumb
 		SummaryComments:      summaryComments,
 		GeneralComments:      generalComments,
 		AdjacentComments:     adjacentComments,
+		DeterministicAlerts:  deterministicAlerts,
 		RawDiff:              diff,
 		ModelName:            modelName,
 		PromptTokenCount:     promptTokenCount,

@@ -95,6 +95,10 @@ type PRModel struct {
 	CriticalCount int `gorm:"default:0"`
 	MediumCount   int `gorm:"default:0"`
 	LowCount      int `gorm:"default:0"`
+	// Overall review verdict parsed from the SUMMARY entry:
+	// "request_changes", "approve_suggestions", "approve", or "" (unknown).
+	// Written alongside the counts by MarkPRCompleted.
+	ReviewVerdict string `gorm:"column:review_verdict;size:32"`
 	// User notes (single-user mode)
 	Notes string `gorm:"size:15"`
 	// Poll economy: last seen updated_at from GitHub search API
@@ -160,4 +164,44 @@ type SettingModel struct {
 // TableName specifies the table name for SettingModel
 func (SettingModel) TableName() string {
 	return "settings"
+}
+
+// FindingOutcomeModel records a human triage decision on a single review
+// finding (GORM model). One row per (owner, repo, pr, reviewed sha,
+// fingerprint); re-deciding the same finding overwrites the row rather than
+// appending history.
+//
+// This is forensics / label-harvest data, not enforcement: nothing blocks on
+// an outcome, and rows are written only by an explicit user action. Outcome
+// vocabulary: "dismissed" (not a bug — reason required), "acknowledged"
+// (risk accepted), "unresolved" (explicitly marked still-open).
+type FindingOutcomeModel struct {
+	ID        uint   `gorm:"primaryKey;autoIncrement"`
+	RepoOwner string `gorm:"size:255;not null;uniqueIndex:idx_finding_outcomes_unique"`
+	RepoName  string `gorm:"size:255;not null;uniqueIndex:idx_finding_outcomes_unique"`
+	PRNumber  int    `gorm:"not null;uniqueIndex:idx_finding_outcomes_unique"`
+	// ReviewedSHA is the commit the review that surfaced the finding was
+	// generated at (short or full, stored as given) — outcomes are per-SHA
+	// so the harvest can join them against per-SHA sidecars.
+	ReviewedSHA string `gorm:"size:40;not null;uniqueIndex:idx_finding_outcomes_unique"`
+	// Fingerprint identifies the finding robustly across regenerations:
+	// "<file>:<line/10>:<sha256(normalized comment prefix)[:12]>". Exact
+	// line numbers drift between pushes and comment tails vary between
+	// runs, so the line is bucketed and only a normalized comment prefix is
+	// hashed. Computed server-side (see server.findingFingerprint).
+	Fingerprint string `gorm:"size:512;not null;uniqueIndex:idx_finding_outcomes_unique"`
+	// Provenance/Severity snapshot the finding's attribution at decision
+	// time so the harvest can split FP rates per pass without re-reading
+	// the sidecar.
+	Provenance string    `gorm:"size:32"`
+	Severity   string    `gorm:"size:16"`
+	Outcome    string    `gorm:"size:16;not null"` // "dismissed", "acknowledged", "unresolved"
+	Reason     string    `gorm:"type:text"`
+	DecidedBy  string    `gorm:"size:255"`
+	DecidedAt  time.Time `gorm:"not null;index"`
+}
+
+// TableName specifies the table name for FindingOutcomeModel
+func (FindingOutcomeModel) TableName() string {
+	return "finding_outcomes"
 }

@@ -123,7 +123,7 @@ func (m *MockDatabase) SetPRAgentReviewing(owner, repo string, prNumber int) err
 func (m *MockDatabase) SetPRError(owner, repo string, prNumber int, message string) error {
 	return nil
 }
-func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int) error {
+func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string) error {
 	return nil
 }
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error)                             { return nil, nil }

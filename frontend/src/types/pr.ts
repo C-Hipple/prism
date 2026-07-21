@@ -25,6 +25,10 @@ export interface PR {
   critical_count: number;
   medium_count: number;
   low_count: number;
+  // Overall AI review verdict parsed from the review SUMMARY. Empty/absent
+  // means "no parseable verdict" and renders nothing (pre-verdict payloads
+  // from older servers or cached websocket data may omit it entirely).
+  review_verdict?: 'request_changes' | 'approve_suggestions' | 'approve' | '';
   // User notes
   notes: string;
 }

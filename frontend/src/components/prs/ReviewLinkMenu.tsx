@@ -4,6 +4,7 @@ import type { PR } from '@/types/pr';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { useDropdown } from '@/hooks/useDropdown';
 import { formatRelativeTime } from '@/utils/formatDate';
+import { CriticalFindingsTriage } from './CriticalFindingsTriage';
 import './ReviewLinkMenu.scss';
 
 interface ReviewLinkMenuProps {
@@ -105,6 +106,9 @@ export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
   ];
   const hasFindings = counts.some(c => c.value > 0);
   const shortSha = pr.commit_sha ? pr.commit_sha.slice(0, 7) : '';
+  // Red "R" badge only for an explicit request-changes verdict on an existing
+  // review; any other verdict (or none) renders exactly the pre-badge UI.
+  const showVerdictBadge = !!reviewUrl && pr.review_verdict === 'request_changes';
 
   return (
     <span
@@ -122,6 +126,16 @@ export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
       >
         View&nbsp;▾
       </a>
+      {showVerdictBadge && (
+        <span
+          className="review-menu__verdict-badge"
+          role="img"
+          aria-label="Verdict: request changes"
+          title="Verdict: request changes"
+        >
+          R
+        </span>
+      )}
 
       {isOpen && createPortal(
         <div
@@ -181,6 +195,11 @@ export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
             <span className="review-menu__icon">⧉</span>{' '}
             {copyStatus === 'copied' ? 'Copied!' : copyStatus === 'error' ? 'Copy failed' : 'Copy compressed review'}
           </button>
+
+          {/* CRITICAL-only outcome triage (dismiss-with-reason / acknowledge).
+              Renders nothing unless the backend feature flag is on — the
+              component probes the endpoint and hides itself on 404. */}
+          {pr.critical_count > 0 && <CriticalFindingsTriage pr={pr} />}
         </div>,
         document.body
       )}

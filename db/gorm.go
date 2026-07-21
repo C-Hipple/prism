@@ -82,6 +82,7 @@ func (g *GormDB) AutoMigrate() error {
 		&SettingModel{},
 		&TelemetryEventModel{},
 		&PollerLeaseModel{},
+		&FindingOutcomeModel{},
 	); err != nil {
 		return err
 	}
@@ -102,6 +103,16 @@ func (g *GormDB) AutoMigrate() error {
 // goes through full AutoMigrate when migrations are enabled, so this no-op
 // is the correct behavior.
 func (g *GormDB) ensureIdempotentColumns() error {
+	// Whole-table creation for tables added after the initial schema. Unlike
+	// the column adds below this is dialect-agnostic: HasTable+CreateTable is
+	// idempotent and safe on every boot, and it keeps SKIP_DB_MIGRATIONS
+	// deployments working when a release introduces a brand-new table.
+	if !g.db.Migrator().HasTable(&FindingOutcomeModel{}) {
+		if err := g.db.Migrator().CreateTable(&FindingOutcomeModel{}); err != nil {
+			return fmt.Errorf("create finding_outcomes: %w", err)
+		}
+	}
+
 	if g.db.Dialector.Name() != "postgres" {
 		return nil
 	}
@@ -113,6 +124,9 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	}
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS error_retry_count integer NOT NULL DEFAULT 0").Error; err != nil {
 		return fmt.Errorf("add error_retry_count: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS review_verdict varchar(32)").Error; err != nil {
+		return fmt.Errorf("add review_verdict: %w", err)
 	}
 	return nil
 }
