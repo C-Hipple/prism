@@ -2,6 +2,7 @@ package html
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -386,4 +387,37 @@ func TestGenerateContextLines_EscapesContent(t *testing.T) {
 		assert.Contains(t, joined, "&lt;script&gt;", "source code must be HTML-escaped")
 		assert.NotContains(t, joined, "<script>", "source code must not render as a live tag")
 	}
+}
+
+func TestGenerateReport_WholeFileCommentRendersOnce(t *testing.T) {
+	// A whole-file finding (LineNumber 0, e.g. a mechanical gate alert) must
+	// render exactly once under the file header — not once per deleted line
+	// (deleted lines carry NewLineNumber 0 and used to collide with the
+	// comment's line-0 key).
+	comments := []types.LineComment{
+		{
+			FilePath:    "worker.py",
+			LineNumber:  0,
+			CommentBody: "Mechanical alert — task payload contract changed.",
+			Importance:  "MEDIUM",
+		},
+	}
+
+	diff := `diff --git a/worker.py b/worker.py
+index 123..456 100644
+--- a/worker.py
++++ b/worker.py
+@@ -10,6 +10,3 @@ def handle():
+ 	keep = 1
+-	removed_one = 1
+-	removed_two = 2
+-	removed_three = 3
+ 	also_keep = 2`
+
+	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+	report, err := GenerateReport(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime)
+	assert.NoError(t, err)
+
+	occurrences := strings.Count(report, "<p>Mechanical alert — task payload contract changed.</p>")
+	assert.Equal(t, 1, occurrences, "whole-file comment should render exactly once, got %d", occurrences)
 }
