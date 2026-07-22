@@ -421,3 +421,35 @@ index 123..456 100644
 	occurrences := strings.Count(report, "<p>Mechanical alert — task payload contract changed.</p>")
 	assert.Equal(t, 1, occurrences, "whole-file comment should render exactly once, got %d", occurrences)
 }
+
+func TestGenerateReport_WholeFileCommentOnOffDiffFile(t *testing.T) {
+	// A whole-file comment (LineNumber 0) whose file is NOT in the diff takes
+	// the adjacent-comments path, where generateContextLines rejects line 0
+	// and returns no context lines. It must still appear in the output.
+	comments := []types.LineComment{
+		{
+			FilePath:    "other.py",
+			LineNumber:  0,
+			CommentBody: "Whole-file note on a file outside the diff",
+			Importance:  "MEDIUM",
+		},
+	}
+
+	diff := `diff --git a/app.go b/app.go
+index 123..456 100644
+--- a/app.go
++++ b/app.go
+@@ -12,6 +12,7 @@ func main() {
+ 	fmt.Println("Hello")
++	// New line
+ }`
+
+	fileContents := map[string]string{"other.py": "line one\nline two\n"}
+	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime, fileContents)
+	assert.NoError(t, err)
+
+	assert.Equal(t, 1, strings.Count(report, "Whole-file note on a file outside the diff"),
+		"off-diff whole-file comment should render exactly once in the adjacent section")
+	assert.Contains(t, report, "adjacent-section")
+}
