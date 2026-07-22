@@ -45,6 +45,9 @@ func userPRAssignmentToUserPRViewModel(a *UserPRAssignment) *UserPRViewModel {
 		_ = json.Unmarshal([]byte(a.ReviewerGroups), &viaTeams)
 	}
 
+	// UserHidden is intentionally NOT mapped back: this conversion feeds
+	// UpsertUserPRAssignment, and user_hidden must only ever be written by
+	// SetUserHiddenForPR — never by an upsert or poller path.
 	return &UserPRViewModel{
 		ID:           uint(a.ID),
 		UserID:       uint(a.UserID),
@@ -365,11 +368,20 @@ func (g *GormDB) HidePRForUser(userID, prID int) error {
 // SetUserHiddenForPR sets the user-initiated hidden toggle for a user's PR
 // view. Unlike HidePRForUser (poller-managed soft delete), user_hidden is
 // only ever written here, so it survives poll cycles until the user flips
-// it back.
+// it back. Returns ErrUserPRViewNotFound when the user has no view row for
+// the PR (both SQLite and Postgres count rows matched, so an idempotent
+// re-set of the same value still reports 1).
 func (g *GormDB) SetUserHiddenForPR(userID, prID int, hidden bool) error {
-	return g.db.Model(&UserPRViewModel{}).
+	res := g.db.Model(&UserPRViewModel{}).
 		Where("user_id = ? AND pr_id = ?", userID, prID).
-		Update("user_hidden", hidden).Error
+		Update("user_hidden", hidden)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrUserPRViewNotFound
+	}
+	return nil
 }
 
 // EnsureUserPRView creates a user_pr_view record if it doesn't exist,

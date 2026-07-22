@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -507,6 +508,13 @@ func (s *Server) handleSetPRHidden(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.db.SetUserHiddenForPR(user.ID, pr.ID, req.Hidden); err != nil {
+		// No view row for this user (pruned/deleted out from under the UI, or
+		// a non-UI client): surface a 404 so the frontend's rollback path runs
+		// instead of a silent optimistic-update snap-back.
+		if errors.Is(err, db.ErrUserPRViewNotFound) {
+			http.Error(w, "PR not assigned to user", http.StatusNotFound)
+			return
+		}
 		http.Error(w, fmt.Sprintf("Failed to update hidden state: %v", err), http.StatusInternalServerError)
 		return
 	}

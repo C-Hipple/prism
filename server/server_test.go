@@ -926,3 +926,32 @@ func TestGetPRResponseForUser_IncludesUserHidden(t *testing.T) {
 	require.NotNil(t, response)
 	assert.True(t, response.Hidden)
 }
+
+func TestHandleSetPRHidden_NoViewRow_Returns404(t *testing.T) {
+	server, database := newTestServer(t, "testuser")
+	defer database.Close()
+
+	user := createTestUser(t, database, "testuser")
+
+	// PR exists, but no user_pr_views row for this user.
+	pr := &db.PR{
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      1,
+		LastCommitSHA: "abc123",
+		Status:        "completed",
+		Title:         "Test PR",
+		Author:        "otheruser",
+	}
+	require.NoError(t, database.UpsertPR(pr))
+
+	body := `{"owner":"owner","repo":"repo","number":1,"hidden":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/prs/hidden", strings.NewReader(body))
+	req = addUserToRequest(req, user)
+	w := httptest.NewRecorder()
+
+	server.handleSetPRHidden(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code,
+		"0-row update must surface as 404 so the frontend rolls back instead of silently snapping back")
+}

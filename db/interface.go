@@ -1,8 +1,14 @@
 package db
 
 import (
+	"errors"
 	"time"
 )
+
+// ErrUserPRViewNotFound is returned by per-user PR view mutations when the
+// user has no user_pr_views row for the PR, so callers can surface the miss
+// (e.g. as a 404) instead of reporting a no-op success.
+var ErrUserPRViewNotFound = errors.New("user PR view not found")
 
 // PR represents a pull request in the database
 type PR struct {

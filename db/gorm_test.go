@@ -1663,3 +1663,31 @@ func TestGormDB_SetUserHiddenForPR_SurvivesPollerWrites(t *testing.T) {
 	require.Len(t, views, 1)
 	assert.False(t, views[0].UserHidden)
 }
+
+func TestGormDB_SetUserHiddenForPR_NoViewRow(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "testuser"}
+	require.NoError(t, db.CreateUser(user))
+
+	pr := &PR{
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      1,
+		LastCommitSHA: "abc123",
+		Status:        "completed",
+	}
+	require.NoError(t, db.UpsertPR(pr))
+	fetchedPR, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+
+	// PR exists but the user has no view row: must not report no-op success.
+	err = db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true)
+	require.ErrorIs(t, err, ErrUserPRViewNotFound)
+
+	// Idempotent re-set of the same value must NOT be mistaken for a miss.
+	require.NoError(t, db.EnsureUserPRView(user.ID, fetchedPR.ID, false))
+	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true))
+	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true))
+}
