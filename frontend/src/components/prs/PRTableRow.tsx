@@ -1,7 +1,7 @@
 import { memo, useCallback, type MouseEvent } from 'react';
 import type { PR } from '@/types/pr';
 import { CommitSha } from '@/components/common';
-import { useDeletePR, useTriggerReview } from '@/hooks/usePRs';
+import { useDeletePR, useSetPRHidden, useTriggerReview } from '@/hooks/usePRs';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { CIStatusIndicator } from './CIStatusIndicator';
 import { NotesCell } from './NotesCell';
@@ -19,6 +19,7 @@ export const PRTableRow = memo(function PRTableRow({
   showViaTeams = true
 }: PRTableRowProps) {
   const deleteMutation = useDeletePR();
+  const setHiddenMutation = useSetPRHidden();
   const triggerReviewMutation = useTriggerReview();
   const { track } = useTelemetry();
   const prUrl = `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
@@ -34,6 +35,17 @@ export const PRTableRow = memo(function PRTableRow({
       number: pr.number,
     });
   }, [pr.owner, pr.repo, pr.number, deleteMutation, track]);
+
+  const handleToggleHidden = useCallback(() => {
+    const hidden = !pr.hidden;
+    track(hidden ? 'hide_pr' : 'unhide_pr', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number });
+    setHiddenMutation.mutate({
+      owner: pr.owner,
+      repo: pr.repo,
+      number: pr.number,
+      hidden,
+    });
+  }, [pr.owner, pr.repo, pr.number, pr.hidden, setHiddenMutation, track]);
 
   const handleTriggerReview = useCallback(() => {
     track('trigger_review', { pr_owner: pr.owner, pr_repo: pr.repo, pr_number: pr.number });
@@ -125,7 +137,12 @@ export const PRTableRow = memo(function PRTableRow({
             Generating…
           </span>
         ) : reviewUrl ? (
-          <ReviewLinkMenu pr={pr} reviewUrl={reviewUrl} />
+          <ReviewLinkMenu
+            pr={pr}
+            reviewUrl={reviewUrl}
+            onTriggerReview={handleTriggerReview}
+            reviewPending={triggerReviewMutation.isPending}
+          />
         ) : (
           // No up-to-date review: brand-new PR, or one whose prior review was
           // cleared server-side after a new commit made it stale.
@@ -144,8 +161,10 @@ export const PRTableRow = memo(function PRTableRow({
         <RowActionsMenu
           pr={pr}
           onTriggerReview={handleTriggerReview}
+          onToggleHidden={handleToggleHidden}
           onDelete={handleDelete}
           reviewPending={triggerReviewMutation.isPending}
+          hiddenPending={setHiddenMutation.isPending}
           deletePending={deleteMutation.isPending}
         />
       </td>

@@ -22,9 +22,12 @@ export function applyPRWebSocketMessage(oldData: PR[] | undefined, message: Serv
 
     case 'pr_updated': {
       const updatedPR = message.payload as PR;
+      // Take the server's hidden flag when present (it's per-user resolved,
+      // so hide/unhide from another tab syncs); older payloads without the
+      // field keep the row where it is instead of un-hiding it.
       return oldData.map((pr) =>
         pr.number === updatedPR.number && pr.repo === updatedPR.repo && pr.owner === updatedPR.owner
-          ? { ...updatedPR, is_mine: pr.is_mine }
+          ? { ...updatedPR, is_mine: pr.is_mine, hidden: updatedPR.hidden ?? pr.hidden }
           : pr
       );
     }

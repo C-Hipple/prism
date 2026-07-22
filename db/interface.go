@@ -1,8 +1,14 @@
 package db
 
 import (
+	"errors"
 	"time"
 )
+
+// ErrUserPRViewNotFound is returned by per-user PR view mutations when the
+// user has no user_pr_views row for the PR, so callers can surface the miss
+// (e.g. as a 404) instead of reporting a no-op success.
+var ErrUserPRViewNotFound = errors.New("user PR view not found")
 
 // PR represents a pull request in the database
 type PR struct {
@@ -67,6 +73,7 @@ type UserPRAssignment struct {
 	ReviewerGroups string // JSON array of team names (deprecated, use ViaTeams)
 	MyReviewStatus string // User's review status for this PR
 	Notes          string // User's notes for this PR
+	UserHidden     bool   // User moved this PR to the Hidden section
 }
 
 // UserPRView represents the relationship between users and PRs (new name for UserPRAssignment)
@@ -80,7 +87,8 @@ type UserPRView struct {
 	ViaTeams     string // JSON array of team names (was ReviewerGroups)
 	ReviewStatus string // User's review status for this PR (was MyReviewStatus)
 	Notes        string // User's notes for this PR
-	Hidden       bool   // Whether this PR is hidden from the user's view
+	Hidden       bool   // Whether this PR is hidden from the user's view (poller soft delete)
+	UserHidden   bool   // User moved this PR to the Hidden section
 }
 
 // UserPRViewBatchItem represents a single row for batch upsert into user_pr_views.
@@ -112,6 +120,7 @@ type PRWithUserView struct {
 	UserNotes    string   // Notes from user_pr_views (overrides PR.Notes)
 	ReviewStatus string   // User's review status from user_pr_views
 	ViaTeams     []string // Team names from user_pr_views
+	UserHidden   bool     // User moved this PR to the Hidden section
 }
 
 // FindingOutcome is a recorded human triage decision on a single review
@@ -240,6 +249,7 @@ type Database interface {
 	UpdateUserViaTeams(userID, prID int, viaTeams []string) error
 	DeleteAllUserPRViews(userID int) (int64, error)
 	HidePRForUser(userID, prID int) error
+	SetUserHiddenForPR(userID, prID int, hidden bool) error
 	EnsureUserPRView(userID, prID int, isAuthor bool) error
 	MigrateLegacyNotes(userID int) (int, error)
 

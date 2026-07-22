@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { usePRs } from '@/hooks/usePRs';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useTelemetry } from '@/hooks/useTelemetry';
@@ -64,6 +64,9 @@ export function ReviewPRsSection({
   const { data: prs, isLoading, error } = usePRs();
   const { data: currentUser } = useCurrentUser();
   const { track } = useTelemetry();
+  // Collapse state is deliberately client-side only (per issue #30); hidden
+  // membership itself is server-persisted per user.
+  const [hiddenExpanded, setHiddenExpanded] = useState(false);
 
   useEffect(() => {
     track('view_review_prs_page');
@@ -76,12 +79,16 @@ export function ReviewPRsSection({
     username: currentUser?.github_username,
   };
 
-  // Split PRs into "My PRs" and "PRs to Review"
+  // Split PRs into "My PRs" and "PRs to Review"; user-hidden rows leave both
+  // and collect in the Hidden section at the bottom instead.
   const allPRs = prs || [];
-  const myPRs = filterAndSortPRs(allPRs.filter(pr => pr.is_mine), filterOpts);
+  const visiblePRs = allPRs.filter(pr => !pr.hidden);
+  const hasHiddenPRs = allPRs.length > visiblePRs.length;
+  const hiddenPRs = filterAndSortPRs(allPRs.filter(pr => pr.hidden), filterOpts);
+  const myPRs = filterAndSortPRs(visiblePRs.filter(pr => pr.is_mine), filterOpts);
 
   // Apply triage filter to review PRs
-  let reviewPRs = filterAndSortPRs(allPRs.filter(pr => !pr.is_mine), filterOpts);
+  let reviewPRs = filterAndSortPRs(visiblePRs.filter(pr => !pr.is_mine), filterOpts);
   if (triageFilter) {
     reviewPRs = reviewPRs.filter(pr => {
       // Only filter completed PRs by triage category
@@ -131,6 +138,30 @@ export function ReviewPRsSection({
           <PRTable prs={reviewPRs} />
         )}
       </section>
+
+      {/* Hidden Section — collapsed by default, only shown once the user has
+          hidden something. Search/team/repo filters apply with the same
+          semantics as the sections above (the count reflects matches). */}
+      {hasHiddenPRs && (
+        <section className="review-prs__hidden-section">
+          <div className="section-header">
+            <h2>
+              <button
+                type="button"
+                className="hidden-section__toggle"
+                aria-expanded={hiddenExpanded}
+                onClick={() => setHiddenExpanded(v => !v)}
+              >
+                <span className="hidden-section__chevron" aria-hidden="true">
+                  {hiddenExpanded ? '▾' : '▸'}
+                </span>
+                Hidden ({hiddenPRs.length})
+              </button>
+            </h2>
+          </div>
+          {hiddenExpanded && <PRTable prs={hiddenPRs} />}
+        </section>
+      )}
     </>
   );
 }

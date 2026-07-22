@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReviewPRsSection } from './ReviewPRsSection';
 import type { PR } from '@/types/pr';
@@ -176,5 +176,74 @@ describe('ReviewPRsSection', () => {
 
     expect(getByText('PRs to Review (1)')).toBeTruthy();
     expect(getByTestId('pr-table-rows').textContent).toContain('Personally requested PR');
+  });
+
+  it('renders no Hidden section when nothing is hidden', () => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    usePRsMock.mockReturnValue({
+      data: [makePR({ number: 31, title: 'Visible PR' })],
+      isLoading: false,
+      error: null,
+    });
+
+    const { queryByText } = render(<ReviewPRsSection />);
+    expect(queryByText(/^Hidden \(/)).toBeNull();
+  });
+
+  it('collects hidden PRs in a collapsed Hidden section and removes them from the other tables', () => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    usePRsMock.mockReturnValue({
+      data: [
+        makePR({ number: 41, title: 'Visible review PR' }),
+        makePR({ number: 42, title: 'Hidden review PR', hidden: true }),
+        makePR({ number: 43, title: 'Hidden own PR', hidden: true, is_mine: true }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+
+    const { getByText, getByRole, getAllByTestId } = render(<ReviewPRsSection />);
+
+    expect(getByText('My PRs (0)')).toBeTruthy();
+    expect(getByText('PRs to Review (1)')).toBeTruthy();
+
+    // Collapsed by default: header with count visible, no hidden table yet.
+    const toggle = getByRole('button', { name: /hidden \(2\)/i });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    let tables = getAllByTestId('pr-table-rows');
+    expect(tables).toHaveLength(1);
+    expect(tables[0].textContent).toBe('Visible review PR');
+
+    // Expanding reveals the hidden rows (mine and to-review alike).
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    tables = getAllByTestId('pr-table-rows');
+    expect(tables).toHaveLength(2);
+    expect(tables[1].textContent).toContain('Hidden review PR');
+    expect(tables[1].textContent).toContain('Hidden own PR');
+
+    // And it collapses again.
+    fireEvent.click(toggle);
+    expect(getAllByTestId('pr-table-rows')).toHaveLength(1);
+  });
+
+  it('applies the search term to the Hidden section with the same semantics', () => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    usePRsMock.mockReturnValue({
+      data: [
+        makePR({ number: 51, title: 'Visible billing PR' }),
+        makePR({ number: 52, title: 'Hidden billing PR', hidden: true }),
+        makePR({ number: 53, title: 'Hidden chat PR', hidden: true }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+
+    const { getByRole, getAllByTestId } = render(<ReviewPRsSection searchTerm="billing" />);
+
+    const toggle = getByRole('button', { name: /hidden \(1\)/i });
+    fireEvent.click(toggle);
+    const tables = getAllByTestId('pr-table-rows');
+    expect(tables[1].textContent).toBe('Hidden billing PR');
   });
 });

@@ -18,6 +18,8 @@ var allowedActions = map[string]bool{
 	"toggle_columns":              true,
 	"trigger_review":              true,
 	"delete_pr":                   true,
+	"hide_pr":                     true,
+	"unhide_pr":                   true,
 	"edit_notes":                  true,
 	"view_review":                 true,
 	"open_pr_github":              true,

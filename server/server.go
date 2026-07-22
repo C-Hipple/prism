@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -114,6 +115,8 @@ type PRResponse struct {
 	ReviewVerdict string `json:"review_verdict"`
 	// User notes
 	Notes string `json:"notes"`
+	// User moved this PR to the collapsed Hidden section
+	Hidden bool `json:"hidden"`
 	// Populated when Status=="error".
 	ErrorMessage string `json:"error_message,omitempty"`
 }
@@ -259,6 +262,7 @@ func (s *Server) Start() error {
 	// API routes (protected)
 	http.Handle("/api/prs", withAuth(s.handleGetPRs))
 	http.Handle("/api/prs/delete", withAuth(s.handleDeletePR))
+	http.Handle("/api/prs/hidden", withAuth(s.handleSetPRHidden))
 	http.Handle("/api/prs/notes", withAuth(s.handleUpdatePRNotes))
 	http.Handle("/api/prs/trigger-review", withAuth(s.handleTriggerReview))
 	http.Handle("/api/prs/generate-review", withAuth(s.handleGenerateReview))
@@ -401,6 +405,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			LowCount:        dbPR.LowCount,
 			ReviewVerdict:   dbPR.ReviewVerdict,
 			Notes:           notes,
+			Hidden:          prView.UserHidden,
 			ErrorMessage:    dbPR.ErrorMessage,
 		})
 	}
@@ -461,6 +466,74 @@ func (s *Server) handleDeletePR(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "success"}) // nolint:errcheck
+}
+
+// handleSetPRHidden toggles the user-initiated "Hidden section" flag on a
+// user's PR view. Unlike delete (poller-managed soft delete), the row stays
+// in the user's PR list — tagged hidden — so the dashboard can render it in
+// the collapsed Hidden section and websocket updates keep reaching it.
+func (s *Server) handleSetPRHidden(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Owner  string `json:"owner"`
+		Repo   string `json:"repo"`
+		Number int    `json:"number"`
+		Hidden bool   `json:"hidden"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// User is always required (auth middleware ensures this)
+	user := auth.GetCurrentUser(r)
+	if user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get the PR to find its ID
+	pr, err := s.db.GetPR(req.Owner, req.Repo, req.Number)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get PR: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if pr == nil {
+		http.Error(w, "PR not found", http.StatusNotFound)
+		return
+	}
+
+	if err := s.db.SetUserHiddenForPR(user.ID, pr.ID, req.Hidden); err != nil {
+		// No view row for this user (pruned/deleted out from under the UI, or
+		// a non-UI client): surface a 404 so the frontend's rollback path runs
+		// instead of a silent optimistic-update snap-back.
+		if errors.Is(err, db.ErrUserPRViewNotFound) {
+			http.Error(w, "PR not assigned to user", http.StatusNotFound)
+			return
+		}
+		http.Error(w, fmt.Sprintf("Failed to update hidden state: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[API] User %d set hidden=%t on %s/%s#%d", user.ID, req.Hidden, req.Owner, req.Repo, req.Number)
+
+	// Notify only this user's clients. Hidden state is user-specific, and the
+	// row should move between sections in place rather than disappear.
+	s.BroadcastEventToUser(user.ID, EventPRUpdated, map[string]interface{}{
+		"owner":  req.Owner,
+		"repo":   req.Repo,
+		"number": req.Number,
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{ // nolint:errcheck
+		"status": "success",
+		"hidden": req.Hidden,
+	})
 }
 
 func (s *Server) handleUpdatePRNotes(w http.ResponseWriter, r *http.Request) {
@@ -1463,6 +1536,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		author = "Unknown"
 	}
 	isMine := strings.EqualFold(author, s.cfg.GitHubUsername)
+	hidden := false
 
 	if userID > 0 {
 		if assignment, err := s.db.GetUserPRAssignment(userID, pr.ID); err == nil && assignment != nil {
@@ -1474,6 +1548,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 				notes = assignment.Notes
 			}
 			isMine = assignment.IsAuthor
+			hidden = assignment.UserHidden
 		}
 	}
 
@@ -1507,6 +1582,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		LowCount:        pr.LowCount,
 		ReviewVerdict:   pr.ReviewVerdict,
 		Notes:           notes,
+		Hidden:          hidden,
 		ErrorMessage:    pr.ErrorMessage,
 	}
 }

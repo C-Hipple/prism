@@ -30,6 +30,7 @@ func userPRViewModelToUserPRAssignment(m *UserPRViewModel) *UserPRAssignment {
 		ReviewerGroups: viaTeams, // Note: renamed to ViaTeams in model, but interface still uses ReviewerGroups
 		MyReviewStatus: m.ReviewStatus,
 		Notes:          m.Notes,
+		UserHidden:     m.UserHidden,
 	}
 }
 
@@ -44,6 +45,9 @@ func userPRAssignmentToUserPRViewModel(a *UserPRAssignment) *UserPRViewModel {
 		_ = json.Unmarshal([]byte(a.ReviewerGroups), &viaTeams)
 	}
 
+	// UserHidden is intentionally NOT mapped back: this conversion feeds
+	// UpsertUserPRAssignment, and user_hidden must only ever be written by
+	// SetUserHiddenForPR — never by an upsert or poller path.
 	return &UserPRViewModel{
 		ID:           uint(a.ID),
 		UserID:       uint(a.UserID),
@@ -314,6 +318,7 @@ func (g *GormDB) GetUserPRViewsWithViaTeams(prIDs []int) ([]UserPRView, error) {
 			ReviewStatus: m.ReviewStatus,
 			Notes:        m.Notes,
 			Hidden:       m.Hidden,
+			UserHidden:   m.UserHidden,
 		}
 	}
 	return views, nil
@@ -360,6 +365,25 @@ func (g *GormDB) HidePRForUser(userID, prID int) error {
 		Update("hidden", true).Error
 }
 
+// SetUserHiddenForPR sets the user-initiated hidden toggle for a user's PR
+// view. Unlike HidePRForUser (poller-managed soft delete), user_hidden is
+// only ever written here, so it survives poll cycles until the user flips
+// it back. Returns ErrUserPRViewNotFound when the user has no view row for
+// the PR (both SQLite and Postgres count rows matched, so an idempotent
+// re-set of the same value still reports 1).
+func (g *GormDB) SetUserHiddenForPR(userID, prID int, hidden bool) error {
+	res := g.db.Model(&UserPRViewModel{}).
+		Where("user_id = ? AND pr_id = ?", userID, prID).
+		Update("user_hidden", hidden)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrUserPRViewNotFound
+	}
+	return nil
+}
+
 // EnsureUserPRView creates a user_pr_view record if it doesn't exist,
 // or un-hides it if it was previously hidden.
 // NOTE: On conflict, ONLY updates "hidden". All other fields (including via_teams)
@@ -387,6 +411,7 @@ func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 		UserNotes    string          `gorm:"column:user_notes"`
 		ReviewStatus string          `gorm:"column:review_status"`
 		ViaTeams     JSONStringArray `gorm:"column:via_teams"`
+		UserHidden   bool            `gorm:"column:user_hidden"`
 	}
 
 	err := g.db.Table("prs").
@@ -395,7 +420,8 @@ func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 			user_pr_views.is_reviewer,
 			user_pr_views.notes as user_notes,
 			user_pr_views.review_status,
-			user_pr_views.via_teams`).
+			user_pr_views.via_teams,
+			user_pr_views.user_hidden`).
 		Joins("INNER JOIN user_pr_views ON prs.id = user_pr_views.pr_id").
 		Where("user_pr_views.user_id = ?", userID).
 		Where("user_pr_views.hidden = ?", false).
@@ -425,6 +451,7 @@ func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 			UserNotes:    r.UserNotes,
 			ReviewStatus: r.ReviewStatus,
 			ViaTeams:     r.ViaTeams,
+			UserHidden:   r.UserHidden,
 		}
 	}
 

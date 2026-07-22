@@ -128,6 +128,9 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS review_verdict varchar(32)").Error; err != nil {
 		return fmt.Errorf("add review_verdict: %w", err)
 	}
+	if err := g.db.Exec("ALTER TABLE user_pr_views ADD COLUMN IF NOT EXISTS user_hidden boolean NOT NULL DEFAULT false").Error; err != nil {
+		return fmt.Errorf("add user_hidden: %w", err)
+	}
 	return nil
 }
 

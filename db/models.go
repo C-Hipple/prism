@@ -130,6 +130,11 @@ type UserPRViewModel struct {
 	ReviewStatus string          `gorm:"size:20"`   // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
 	Notes        string          `gorm:"size:15"`
 	Hidden       bool            `gorm:"default:false"`
+	// User-initiated "move to Hidden section" toggle. Distinct from Hidden,
+	// which is a poller-managed soft delete that the poll cycle resets on
+	// every upsert; UserHidden is only ever written by the user and must
+	// never appear in a poller DoUpdates set.
+	UserHidden bool `gorm:"column:user_hidden;default:false"`
 }
 
 // TableName specifies the table name for UserPRViewModel
