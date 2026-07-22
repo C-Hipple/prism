@@ -800,3 +800,129 @@ func TestHandleGenerateReview_PRNotFoundOnGitHub_Returns404(t *testing.T) {
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
+
+// =============================================================================
+// handleSetPRHidden Tests — user-initiated Hidden section toggle
+// =============================================================================
+
+func TestHandleSetPRHidden_TogglesAndSurfacesInGetPRs(t *testing.T) {
+	server, database := newTestServer(t, "testuser")
+	defer database.Close()
+	// Start broadcaster so BroadcastEventToUser doesn't block
+	go server.broadcaster()
+
+	user := createTestUser(t, database, "testuser")
+
+	pr := &db.PR{
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      1,
+		LastCommitSHA: "abc123",
+		Status:        "completed",
+		Title:         "Test PR",
+		Author:        "otheruser",
+	}
+	require.NoError(t, database.UpsertPR(pr))
+	prFromDB, err := database.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	ensureUserPRView(t, database, user.ID, prFromDB.ID, false)
+
+	setHidden := func(hidden bool) *httptest.ResponseRecorder {
+		body := fmt.Sprintf(`{"owner":"owner","repo":"repo","number":1,"hidden":%t}`, hidden)
+		req := httptest.NewRequest(http.MethodPost, "/api/prs/hidden", strings.NewReader(body))
+		req = addUserToRequest(req, user)
+		w := httptest.NewRecorder()
+		server.handleSetPRHidden(w, req)
+		return w
+	}
+
+	getPRs := func() []PRResponse {
+		req := httptest.NewRequest(http.MethodGet, "/api/prs", nil)
+		req = addUserToRequest(req, user)
+		w := httptest.NewRecorder()
+		server.handleGetPRs(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		var response []PRResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+		return response
+	}
+
+	// Default: not hidden.
+	response := getPRs()
+	require.Len(t, response, 1)
+	assert.False(t, response[0].Hidden)
+
+	// Hide: the PR stays in the response, tagged hidden.
+	w := setHidden(true)
+	assert.Equal(t, http.StatusOK, w.Code)
+	response = getPRs()
+	require.Len(t, response, 1, "hidden PR must still be returned so the Hidden section can render it")
+	assert.True(t, response[0].Hidden)
+
+	// Unhide.
+	w = setHidden(false)
+	assert.Equal(t, http.StatusOK, w.Code)
+	response = getPRs()
+	require.Len(t, response, 1)
+	assert.False(t, response[0].Hidden)
+}
+
+func TestHandleSetPRHidden_PRNotFound(t *testing.T) {
+	server, database := newTestServer(t, "testuser")
+	defer database.Close()
+
+	user := createTestUser(t, database, "testuser")
+
+	body := `{"owner":"owner","repo":"repo","number":999,"hidden":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/prs/hidden", strings.NewReader(body))
+	req = addUserToRequest(req, user)
+	w := httptest.NewRecorder()
+
+	server.handleSetPRHidden(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestHandleSetPRHidden_MethodNotAllowed(t *testing.T) {
+	server, database := newTestServer(t, "testuser")
+	defer database.Close()
+
+	user := createTestUser(t, database, "testuser")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prs/hidden", nil)
+	req = addUserToRequest(req, user)
+	w := httptest.NewRecorder()
+
+	server.handleSetPRHidden(w, req)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+}
+
+func TestGetPRResponseForUser_IncludesUserHidden(t *testing.T) {
+	server, database := newTestServer(t, "testuser")
+	defer database.Close()
+
+	user := createTestUser(t, database, "testuser")
+
+	pr := &db.PR{
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      1,
+		LastCommitSHA: "abc123",
+		Status:        "completed",
+		Title:         "Test PR",
+		Author:        "otheruser",
+	}
+	require.NoError(t, database.UpsertPR(pr))
+	prFromDB, err := database.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	ensureUserPRView(t, database, user.ID, prFromDB.ID, false)
+
+	require.NoError(t, database.SetUserHiddenForPR(user.ID, prFromDB.ID, true))
+
+	// Websocket broadcasts resolve per-recipient payloads through this path;
+	// it must carry the hidden flag or updates would un-hide rows client-side.
+	response := server.getPRResponseForUser(user.ID, "owner", "repo", 1)
+	require.NotNil(t, response)
+	assert.True(t, response.Hidden)
+}

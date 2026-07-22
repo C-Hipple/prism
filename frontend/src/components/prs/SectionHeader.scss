@@ -72,4 +72,30 @@
     font-style: italic;
     padding: 16px 0;
   }
+
+  &__hidden-section {
+    margin-top: 32px;
+  }
+}
+
+.hidden-section__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+
+  &:hover .hidden-section__chevron {
+    color: #c9d1d9;
+  }
+}
+
+.hidden-section__chevron {
+  font-size: 0.8em;
+  color: #8b949e;
 }

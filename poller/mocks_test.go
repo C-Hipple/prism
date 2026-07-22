@@ -662,6 +662,10 @@ func (m *MockDatabase) HidePRForUser(userID, prID int) error {
 	return nil
 }
 
+func (m *MockDatabase) SetUserHiddenForPR(userID, prID int, hidden bool) error {
+	return nil
+}
+
 func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

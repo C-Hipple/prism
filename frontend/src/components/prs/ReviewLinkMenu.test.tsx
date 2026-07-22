@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PR } from '@/types/pr';
 import { ReviewLinkMenu } from './ReviewLinkMenu';
@@ -38,6 +38,18 @@ const makePR = (partial: Partial<PR> = {}): PR => ({
 
 const badge = () => screen.queryByRole('img', { name: 'Verdict: request changes' });
 
+const renderMenu = (overrides: Partial<React.ComponentProps<typeof ReviewLinkMenu>> = {}) => {
+  const props = {
+    pr: makePR(),
+    reviewUrl: '/reviews/review.html',
+    onTriggerReview: vi.fn(),
+    reviewPending: false,
+    ...overrides,
+  };
+  render(<ReviewLinkMenu {...props} />);
+  return props;
+};
+
 describe('ReviewLinkMenu verdict badge', () => {
   beforeEach(() => {
     useTelemetryMock.mockReturnValue({ track: vi.fn() });
@@ -45,12 +57,7 @@ describe('ReviewLinkMenu verdict badge', () => {
   afterEach(() => cleanup());
 
   it('renders the red R badge when the verdict is request_changes', () => {
-    render(
-      <ReviewLinkMenu
-        pr={makePR({ review_verdict: 'request_changes' })}
-        reviewUrl="/reviews/review.html"
-      />
-    );
+    renderMenu({ pr: makePR({ review_verdict: 'request_changes' }) });
     const el = badge();
     expect(el).toBeTruthy();
     expect(el?.textContent).toBe('R');
@@ -60,32 +67,69 @@ describe('ReviewLinkMenu verdict badge', () => {
   });
 
   it('renders no badge for an approve verdict', () => {
-    render(<ReviewLinkMenu pr={makePR({ review_verdict: 'approve' })} reviewUrl="/reviews/review.html" />);
+    renderMenu({ pr: makePR({ review_verdict: 'approve' }) });
     expect(badge()).toBeNull();
   });
 
   it('renders no badge for approve_suggestions', () => {
-    render(
-      <ReviewLinkMenu
-        pr={makePR({ review_verdict: 'approve_suggestions' })}
-        reviewUrl="/reviews/review.html"
-      />
-    );
+    renderMenu({ pr: makePR({ review_verdict: 'approve_suggestions' }) });
     expect(badge()).toBeNull();
   });
 
   it('renders no badge when the verdict is empty', () => {
-    render(<ReviewLinkMenu pr={makePR({ review_verdict: '' })} reviewUrl="/reviews/review.html" />);
+    renderMenu({ pr: makePR({ review_verdict: '' }) });
     expect(badge()).toBeNull();
   });
 
   it('renders no badge when the verdict field is absent (older payloads)', () => {
-    render(<ReviewLinkMenu pr={makePR()} reviewUrl="/reviews/review.html" />);
+    renderMenu({ pr: makePR() });
     expect(badge()).toBeNull();
   });
 
   it('renders no badge without a review URL even if the verdict is request_changes', () => {
-    render(<ReviewLinkMenu pr={makePR({ review_verdict: 'request_changes' })} reviewUrl="" />);
+    renderMenu({ pr: makePR({ review_verdict: 'request_changes' }), reviewUrl: '' });
     expect(badge()).toBeNull();
+  });
+});
+
+describe('ReviewLinkMenu regenerate action', () => {
+  beforeEach(() => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  // The panel opens off hover timers on the anchor span wrapping the View link.
+  const openPanel = () => {
+    const anchor = screen.getByRole('link', { name: /view/i }).parentElement!;
+    fireEvent.mouseEnter(anchor);
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+  };
+
+  it('exposes a Regenerate review item in the hover panel', () => {
+    renderMenu();
+    openPanel();
+    expect(screen.getByRole('menuitem', { name: /regenerate review/i })).toBeTruthy();
+  });
+
+  it('calls onTriggerReview and closes the panel when clicked', () => {
+    const { onTriggerReview } = renderMenu();
+    openPanel();
+    fireEvent.click(screen.getByRole('menuitem', { name: /regenerate review/i }));
+    expect(onTriggerReview).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('disables the item and shows "Reviewing…" while the trigger is pending', () => {
+    renderMenu({ reviewPending: true });
+    openPanel();
+    const item = screen.getByRole('menuitem', { name: /reviewing/i }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    expect(screen.queryByRole('menuitem', { name: /regenerate review/i })).toBeNull();
   });
 });

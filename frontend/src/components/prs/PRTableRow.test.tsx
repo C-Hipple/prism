@@ -3,14 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PR } from '@/types/pr';
 import { PRTableRow } from './PRTableRow';
 
-const { triggerMutate, deleteMutate, trackMock } = vi.hoisted(() => ({
+const { triggerMutate, deleteMutate, setHiddenMutate, trackMock } = vi.hoisted(() => ({
   triggerMutate: vi.fn(),
   deleteMutate: vi.fn(),
+  setHiddenMutate: vi.fn(),
   trackMock: vi.fn(),
 }));
 
 vi.mock('@/hooks/usePRs', () => ({
   useDeletePR: () => ({ mutate: deleteMutate, isPending: false }),
+  useSetPRHidden: () => ({ mutate: setHiddenMutate, isPending: false }),
   useTriggerReview: () => ({ mutate: triggerMutate, isPending: false }),
 }));
 vi.mock('@/hooks/useTelemetry', () => ({

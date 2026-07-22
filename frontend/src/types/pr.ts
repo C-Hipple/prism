@@ -31,4 +31,8 @@ export interface PR {
   review_verdict?: 'request_changes' | 'approve_suggestions' | 'approve' | '';
   // User notes
   notes: string;
+  // User moved this PR to the collapsed Hidden section. Optional so cached
+  // websocket payloads from older servers (which omit it) stay valid and
+  // read as "not hidden".
+  hidden?: boolean;
 }

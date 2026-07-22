@@ -26,6 +26,17 @@ export async function updatePRNotes(params: UpdatePRNotesParams): Promise<{ stat
   return apiPost<{ status: string; notes: string }>('/api/prs/notes', params);
 }
 
+export interface SetPRHiddenParams {
+  owner: string;
+  repo: string;
+  number: number;
+  hidden: boolean;
+}
+
+export async function setPRHidden(params: SetPRHiddenParams): Promise<{ status: string; hidden: boolean }> {
+  return apiPost<{ status: string; hidden: boolean }>('/api/prs/hidden', params);
+}
+
 export interface TriggerReviewParams {
   owner: string;
   repo: string;

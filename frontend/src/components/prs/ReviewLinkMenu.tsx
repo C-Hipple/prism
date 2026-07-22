@@ -11,6 +11,10 @@ interface ReviewLinkMenuProps {
   pr: PR;
   /** URL to the rendered AI review (only passed when a review exists). */
   reviewUrl: string;
+  /** Starts a fresh review for this PR (same flow as the row actions menu). */
+  onTriggerReview: () => void;
+  /** True while the trigger-review mutation is in flight. */
+  reviewPending: boolean;
 }
 
 // Keep in sync with $panel-width in ReviewLinkMenu.scss.
@@ -18,7 +22,7 @@ const PANEL_WIDTH = 240;
 const OPEN_DELAY_MS = 250;
 const CLOSE_DELAY_MS = 200;
 
-export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
+export function ReviewLinkMenu({ pr, reviewUrl, onTriggerReview, reviewPending }: ReviewLinkMenuProps) {
   const { track } = useTelemetry();
   // Positioning + reflow live in the shared hook; this menu drives open/close
   // off hover timers rather than clicks, so it wraps open()/close().
@@ -98,6 +102,16 @@ export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
     if (copyResetTimer.current) clearTimeout(copyResetTimer.current);
     copyResetTimer.current = setTimeout(() => setCopyStatus('idle'), 1500);
   }, [track, trackOpts, exportUrl]);
+
+  // Once the trigger lands, the row flips to generating and this whole menu
+  // unmounts; the pending/status guard covers the window in between.
+  const reviewInFlight =
+    reviewPending || pr.status === 'generating' || pr.status === 'agent_reviewing';
+
+  const handleRegenerate = useCallback(() => {
+    onTriggerReview();
+    close();
+  }, [onTriggerReview, close]);
 
   const counts = [
     { key: 'critical', label: 'critical', value: pr.critical_count, cls: 'review-menu__dot--critical' },
@@ -194,6 +208,16 @@ export function ReviewLinkMenu({ pr, reviewUrl }: ReviewLinkMenuProps) {
           >
             <span className="review-menu__icon">⧉</span>{' '}
             {copyStatus === 'copied' ? 'Copied!' : copyStatus === 'error' ? 'Copy failed' : 'Copy compressed review'}
+          </button>
+          <button
+            type="button"
+            className="review-menu__item review-menu__item--button"
+            role="menuitem"
+            onClick={handleRegenerate}
+            disabled={reviewInFlight}
+          >
+            <span className="review-menu__icon">🔄</span>{' '}
+            {reviewInFlight ? 'Reviewing…' : 'Regenerate review'}
           </button>
 
           {/* CRITICAL-only outcome triage (dismiss-with-reason / acknowledge).

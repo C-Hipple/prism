@@ -11,9 +11,12 @@ const PANEL_WIDTH = 200;
 interface RowActionsMenuProps {
   pr: PR;
   onTriggerReview: () => void;
+  onToggleHidden: () => void;
   onDelete: () => void;
   /** True while the trigger-review mutation is in flight. */
   reviewPending: boolean;
+  /** True while the set-hidden mutation is in flight. */
+  hiddenPending: boolean;
   /** True while the delete mutation is in flight. */
   deletePending: boolean;
 }
@@ -24,7 +27,7 @@ interface RowActionsMenuProps {
  * itself surfaces review-in-flight state so status stays visible without
  * opening the menu.
  */
-export function RowActionsMenu({ pr, onTriggerReview, onDelete, reviewPending, deletePending }: RowActionsMenuProps) {
+export function RowActionsMenu({ pr, onTriggerReview, onToggleHidden, onDelete, reviewPending, hiddenPending, deletePending }: RowActionsMenuProps) {
   const { track } = useTelemetry();
   const { isOpen, toggle, close, anchorRef, panelRef, position } = useDropdown({
     panelWidth: PANEL_WIDTH,
@@ -48,6 +51,11 @@ export function RowActionsMenu({ pr, onTriggerReview, onDelete, reviewPending, d
     onTriggerReview();
     close();
   }, [onTriggerReview, close]);
+
+  const handleToggleHidden = useCallback(() => {
+    onToggleHidden();
+    close();
+  }, [onToggleHidden, close]);
 
   const handleDelete = useCallback(() => {
     onDelete();
@@ -90,6 +98,15 @@ export function RowActionsMenu({ pr, onTriggerReview, onDelete, reviewPending, d
             disabled={reviewInFlight}
           >
             {reviewLabel}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="row-actions__item"
+            onClick={handleToggleHidden}
+            disabled={hiddenPending}
+          >
+            {hiddenPending ? 'Updating…' : pr.hidden ? '👁 Unhide' : '🙈 Hide'}
           </button>
           <button
             type="button"

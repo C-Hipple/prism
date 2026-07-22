@@ -40,8 +40,10 @@ const renderMenu = (overrides: Partial<React.ComponentProps<typeof RowActionsMen
   const props = {
     pr: makePR(),
     onTriggerReview: vi.fn(),
+    onToggleHidden: vi.fn(),
     onDelete: vi.fn(),
     reviewPending: false,
+    hiddenPending: false,
     deletePending: false,
     ...overrides,
   };
@@ -112,6 +114,34 @@ describe('RowActionsMenu', () => {
     renderMenu({ pr: makePR({ status: 'agent_reviewing' }) });
     openMenu();
     const item = screen.getByRole('menuitem', { name: /reviewing/i }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+  });
+
+  it('shows a Hide item for a visible PR', () => {
+    renderMenu();
+    openMenu();
+    expect(screen.getByRole('menuitem', { name: /hide/i })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: /unhide/i })).toBeNull();
+  });
+
+  it('shows an Unhide item for a hidden PR', () => {
+    renderMenu({ pr: makePR({ hidden: true }) });
+    openMenu();
+    expect(screen.getByRole('menuitem', { name: /unhide/i })).toBeTruthy();
+  });
+
+  it('calls onToggleHidden and closes the menu when Hide is clicked', () => {
+    const { onToggleHidden } = renderMenu();
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: /hide/i }));
+    expect(onToggleHidden).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('disables the hide item and shows "Updating…" while the toggle is pending', () => {
+    renderMenu({ hiddenPending: true });
+    openMenu();
+    const item = screen.getByRole('menuitem', { name: /updating/i }) as HTMLButtonElement;
     expect(item.disabled).toBe(true);
   });
 

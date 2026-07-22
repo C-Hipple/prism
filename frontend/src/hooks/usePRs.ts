@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchPRs, deletePR, updatePRNotes, triggerReview, type DeletePRParams, type UpdatePRNotesParams, type TriggerReviewParams } from '@/api/prs';
+import { fetchPRs, deletePR, updatePRNotes, setPRHidden, triggerReview, type DeletePRParams, type UpdatePRNotesParams, type SetPRHiddenParams, type TriggerReviewParams } from '@/api/prs';
 import type { PR } from '@/types/pr';
 import { PR_POLL_INTERVAL, PR_STALE_TIME } from '@/utils/constants';
 
@@ -86,6 +86,44 @@ export function useUpdatePRNotes() {
     },
     onSettled: () => {
       // Refetch to ensure consistency
+      queryClient.invalidateQueries({ queryKey: ['prs'] });
+    },
+  });
+}
+
+export function useSetPRHidden() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (params: SetPRHiddenParams) => setPRHidden(params),
+    onMutate: async (params) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ['prs'] });
+
+      // Snapshot previous value
+      const previousPRs = queryClient.getQueryData<PR[]>(['prs']);
+
+      // Optimistically update so the row moves sections immediately
+      queryClient.setQueryData<PR[]>(['prs'], (old) =>
+        old?.map((pr) =>
+          pr.owner === params.owner &&
+          pr.repo === params.repo &&
+          pr.number === params.number
+            ? { ...pr, hidden: params.hidden }
+            : pr
+        )
+      );
+
+      return { previousPRs };
+    },
+    onError: (err, _variables, context) => {
+      // Rollback on error
+      if (context?.previousPRs) {
+        queryClient.setQueryData(['prs'], context.previousPRs);
+      }
+      alert(`Error updating hidden state: ${err.message}`);
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['prs'] });
     },
   });

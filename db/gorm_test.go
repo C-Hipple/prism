@@ -1611,3 +1611,55 @@ func TestGormDB_Leadership_AcquireRenewExpireSteal(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "A must not steal B's valid lease")
 }
+
+func TestGormDB_SetUserHiddenForPR_SurvivesPollerWrites(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "testuser"}
+	require.NoError(t, db.CreateUser(user))
+
+	pr := &PR{
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      1,
+		LastCommitSHA: "abc123",
+		Status:        "completed",
+	}
+	require.NoError(t, db.UpsertPR(pr))
+	fetchedPR, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+
+	require.NoError(t, db.EnsureUserPRView(user.ID, fetchedPR.ID, false))
+
+	// User hides the PR: the row must stay in the list, tagged hidden —
+	// unlike HidePRForUser (poller soft delete), which drops it entirely.
+	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true))
+
+	views, err := db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	require.Len(t, views, 1, "user-hidden PR must still be returned")
+	assert.True(t, views[0].UserHidden)
+
+	// Poller finds the PR again: EnsureUserPRView and a batch upsert both
+	// reset the poller-managed hidden column, but must NOT touch user_hidden.
+	require.NoError(t, db.EnsureUserPRView(user.ID, fetchedPR.ID, false))
+	status := "APPROVED"
+	teams := []string{"Team A"}
+	require.NoError(t, db.BatchUpsertUserPRViews([]UserPRViewBatchItem{
+		{UserID: user.ID, PRID: fetchedPR.ID, IsAuthor: false, ReviewStatus: &status, ViaTeams: &teams},
+	}))
+
+	views, err = db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	require.Len(t, views, 1)
+	assert.True(t, views[0].UserHidden, "user_hidden must survive poller upserts")
+
+	// User un-hides.
+	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, false))
+
+	views, err = db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	require.Len(t, views, 1)
+	assert.False(t, views[0].UserHidden)
+}
