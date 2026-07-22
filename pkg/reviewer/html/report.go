@@ -164,6 +164,13 @@ func GenerateReportWithContext(comments []types.LineComment, diff string, prNumb
 			canDisplayInline := false
 			for _, diffFile := range diffFiles {
 				if diffFile.Path == comment.FilePath {
+					if comment.LineNumber == 0 {
+						// Whole-file finding: displayable whenever the file is in
+						// the diff. Must not match per-line, since added/deleted
+						// lines carry a zero Old/NewLineNumber.
+						canDisplayInline = true
+						break
+					}
 					// Check if the line number exists in the diff
 					for _, line := range diffFile.Lines {
 						if line.NewLineNumber == comment.LineNumber || line.OldLineNumber == comment.LineNumber {

@@ -3,13 +3,33 @@
 <div class="diff-file">
     <div class="file-header">{{$filePath}}</div>
     <div class="diff-table">
+        {{/* Whole-file findings (LineNumber 0) render once, under the header.
+             Keying them per-line would repeat them on every deleted line,
+             since deleted lines carry NewLineNumber 0. */}}
+        {{$fileComments := index (index $.Root.Comments $filePath) 0}}
+        {{if $fileComments}}
+        <div class="comment-row">
+            <div class="line-num"></div><div class="line-num"></div>
+            <div class="comment-cell">
+                {{range $fileComments}}
+                <div class="comment-body">
+                    <div class="comment-counter">
+                        Comment {{.Counter}} of {{.Total}}
+                    </div>
+                    {{.CommentBody | markdownify}}
+                </div>
+                {{end}}
+            </div>
+        </div>
+        {{end}}
         {{range .File.Lines}}
         <div class="line {{.Type}}">
             <div class="line-num">{{if eq .OldLineNumber 0}}-{{else}}{{.OldLineNumber}}{{end}}</div>
             <div class="line-num">{{if eq .NewLineNumber 0}}-{{else}}{{.NewLineNumber}}{{end}}</div>
             <div class="line-content">{{.Content}}</div>
         </div>
-        {{$comments := index (index $.Root.Comments $filePath) .NewLineNumber}}
+        {{$comments := ""}}
+        {{if ne .NewLineNumber 0}}{{$comments = index (index $.Root.Comments $filePath) .NewLineNumber}}{{end}}
         {{if $comments}}
         <div class="comment-row">
             <div class="line-num"></div><div class="line-num"></div>
