@@ -1625,6 +1625,18 @@ func (p *Poller) poll(ctx context.Context) {
 		for _, info := range prInfos {
 			key := fmt.Sprintf("%s/%s/%d", info.Owner, info.Repo, info.Number)
 			if dbPR, exists := dbPRMap[key]; exists {
+				// Known PRs are hydrated from the DB, not GitHub, so a renamed
+				// PR would keep its stale title forever. The search response
+				// already carries the current title — write it through.
+				if info.Title != "" && info.Title != dbPR.Title {
+					if err := p.db.UpdatePRMetadata(info.Owner, info.Repo, info.Number, info.Title, dbPR.Author); err != nil {
+						log.Printf("[POLL] Warning: Failed to update title for %s: %v", key, err)
+					} else {
+						log.Printf("[POLL] Updated title for %s: %q", key, info.Title)
+						dbPR.Title = info.Title
+						p.broadcastPRUpdate(info.Owner, info.Repo, info.Number)
+					}
+				}
 				allPRs = append(allPRs, buildPRFromDB(*dbPR))
 			} else {
 				unknownPRs = append(unknownPRs, info)

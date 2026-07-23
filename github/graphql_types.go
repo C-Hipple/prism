@@ -133,6 +133,7 @@ type PRInfo struct {
 	Owner     string
 	Repo      string
 	Number    int
+	Title     string     // PR title (populated by search, "" otherwise)
 	UpdatedAt *time.Time // GitHub updated_at (populated by search, nil otherwise)
 }
 
