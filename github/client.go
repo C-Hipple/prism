@@ -122,6 +122,7 @@ func (c *Client) searchOpenPRsWithREST(ctx context.Context, orgName string) ([]P
 				Owner:  repoOwner,
 				Repo:   repoName,
 				Number: issue.GetNumber(),
+				Title:  issue.GetTitle(),
 			}
 			if updatedAt := issue.GetUpdatedAt(); !updatedAt.IsZero() {
 				t := updatedAt.Time

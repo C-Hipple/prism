@@ -3347,3 +3347,96 @@ func TestReviewProcessTimeout_ExceedsAgentBudget(t *testing.T) {
 		t.Errorf("timeout %v must exceed the agent wall-clock budget", got)
 	}
 }
+
+func TestPoll_UpdatesStaleTitle_OrgMode(t *testing.T) {
+	// A known DB PR whose title changed on GitHub: the org-mode search phase
+	// must write the new title through, broadcast the update, and not churn
+	// on subsequent polls once the titles match.
+	cfg := testConfig()
+	cfg.GitHubOrgName = "myorg"
+
+	mockDB := NewMockDatabase()
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID:            1,
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      1,
+		LastCommitSHA: "sha1",
+		Title:         "Old title",
+		Author:        "author",
+		Status:        "completed",
+	}
+
+	newTitle := "New title after rename"
+	mockGH := NewMockGitHubClient()
+	mockGH.SearchOpenPRsResults = []github.PRInfo{
+		{Owner: "owner", Repo: "repo", Number: 1, Title: newTitle},
+	}
+
+	poller := newTestPollerFull(mockGH, mockDB, NewMockReviewStorage(), NewMockReviewGenerator())
+	poller.cfg = cfg
+	var updatedEvents int
+	poller.EventFunc = func(eventType string, payload interface{}) {
+		if eventType == "pr_updated" {
+			updatedEvents++
+		}
+	}
+
+	poller.poll(context.Background())
+
+	if got := mockDB.PRs["owner/repo/1"].Title; got != newTitle {
+		t.Errorf("expected DB title updated to %q, got %q", newTitle, got)
+	}
+	if len(mockDB.UpdatePRMetadataCalls) != 1 {
+		t.Errorf("expected exactly 1 UpdatePRMetadata call, got %d", len(mockDB.UpdatePRMetadataCalls))
+	}
+	if updatedEvents == 0 {
+		t.Error("expected a pr_updated event for the renamed PR")
+	}
+
+	// Second poll with matching titles must not update again.
+	poller.poll(context.Background())
+	if len(mockDB.UpdatePRMetadataCalls) != 1 {
+		t.Errorf("expected no further UpdatePRMetadata calls on second poll, got %d total", len(mockDB.UpdatePRMetadataCalls))
+	}
+}
+
+func TestPoll_UpdatesStaleTitle_DevMode(t *testing.T) {
+	// Dev mode (no org): known PRs come back as full GitHub objects; a title
+	// change must be written through to the DB, which is what the dashboard
+	// renders from.
+	mockDB := NewMockDatabase()
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID:            1,
+		RepoOwner:     "owner",
+		RepoName:      "repo",
+		PRNumber:      1,
+		LastCommitSHA: "sha1",
+		Title:         "Old title",
+		Author:        "author",
+		Status:        "completed",
+	}
+
+	newTitle := "New title after rename"
+	mockGH := NewMockGitHubClient()
+	mockGH.PRsRequestingReview = []github.PullRequest{
+		{Owner: "owner", Repo: "repo", Number: 1, CommitSHA: "sha1", Title: newTitle, Author: "author"},
+	}
+
+	poller := newTestPollerFull(mockGH, mockDB, NewMockReviewStorage(), NewMockReviewGenerator())
+
+	poller.poll(context.Background())
+
+	if got := mockDB.PRs["owner/repo/1"].Title; got != newTitle {
+		t.Errorf("expected DB title updated to %q, got %q", newTitle, got)
+	}
+	if len(mockDB.UpdatePRMetadataCalls) != 1 {
+		t.Errorf("expected exactly 1 UpdatePRMetadata call, got %d", len(mockDB.UpdatePRMetadataCalls))
+	}
+
+	// Second poll with matching titles must not update again.
+	poller.poll(context.Background())
+	if len(mockDB.UpdatePRMetadataCalls) != 1 {
+		t.Errorf("expected no further UpdatePRMetadata calls on second poll, got %d total", len(mockDB.UpdatePRMetadataCalls))
+	}
+}

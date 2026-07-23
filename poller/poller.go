@@ -1625,6 +1625,18 @@ func (p *Poller) poll(ctx context.Context) {
 		for _, info := range prInfos {
 			key := fmt.Sprintf("%s/%s/%d", info.Owner, info.Repo, info.Number)
 			if dbPR, exists := dbPRMap[key]; exists {
+				// Known PRs are hydrated from the DB, not GitHub, so a renamed
+				// PR would keep its stale title forever. The search response
+				// already carries the current title — write it through.
+				if info.Title != "" && info.Title != dbPR.Title {
+					if err := p.db.UpdatePRMetadata(info.Owner, info.Repo, info.Number, info.Title, dbPR.Author); err != nil {
+						log.Printf("[POLL] Warning: Failed to update title for %s: %v", key, err)
+					} else {
+						log.Printf("[POLL] Updated title for %s: %q", key, info.Title)
+						dbPR.Title = info.Title
+						p.broadcastPRUpdate(info.Owner, info.Repo, info.Number)
+					}
+				}
 				allPRs = append(allPRs, buildPRFromDB(*dbPR))
 			} else {
 				unknownPRs = append(unknownPRs, info)
@@ -1691,7 +1703,21 @@ func (p *Poller) poll(ctx context.Context) {
 	// and the PR stays invisible on the dashboard until the NEXT poll cycle.
 	for _, pr := range allPRs {
 		key := fmt.Sprintf("%s/%s/%d", pr.Owner, pr.Repo, pr.Number)
-		if _, exists := dbPRMap[key]; !exists {
+		if dbPR, exists := dbPRMap[key]; exists {
+			// Dev mode fetches full PRs from GitHub, so allPRs carries fresh
+			// titles here — write a rename through, mirroring the org-mode
+			// search-phase sync above (where this is a no-op: known PRs were
+			// built from the already-synced dbPR).
+			if pr.Title != "" && pr.Title != dbPR.Title {
+				if err := p.db.UpdatePRMetadata(pr.Owner, pr.Repo, pr.Number, pr.Title, dbPR.Author); err != nil {
+					log.Printf("[POLL] Warning: Failed to update title for %s: %v", key, err)
+				} else {
+					log.Printf("[POLL] Updated title for %s: %q", key, pr.Title)
+					dbPR.Title = pr.Title
+					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
+				}
+			}
+		} else {
 			newPR := &db.PR{
 				RepoOwner:     pr.Owner,
 				RepoName:      pr.Repo,

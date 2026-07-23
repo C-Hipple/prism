@@ -255,6 +255,7 @@ func (c *AppClient) SearchOpenPRsForOrg(ctx context.Context, orgName string) ([]
 				Owner:  parts[0],
 				Repo:   parts[1],
 				Number: issue.GetNumber(),
+				Title:  issue.GetTitle(),
 			}
 			if ua := issue.GetUpdatedAt(); !ua.IsZero() {
 				t := ua.Time

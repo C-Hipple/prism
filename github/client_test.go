@@ -177,6 +177,9 @@ func TestSearchOpenPRs_FallsBackToRESTWithoutAppClient(t *testing.T) {
 	if results[0].UpdatedAt == nil {
 		t.Fatal("expected UpdatedAt to be populated")
 	}
+	if results[0].Title != "Example PR" {
+		t.Fatalf("expected Title to be populated from search, got %q", results[0].Title)
+	}
 }
 
 func TestBatchGetPRDetails_FallsBackToRESTWithoutAppClient(t *testing.T) {
