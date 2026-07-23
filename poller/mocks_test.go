@@ -248,7 +248,8 @@ type MockDatabase struct {
 	ReviewNRequests   int
 
 	// Track calls for verification
-	DeletePRCalls []struct {
+	UpdatePRMetadataCalls []string // "owner/repo/number" keys, in call order
+	DeletePRCalls         []struct {
 		Owner    string
 		Repo     string
 		PRNumber int
@@ -501,6 +502,7 @@ func (m *MockDatabase) UpdatePRMetadata(owner, repo string, prNumber int, title,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := prDBKey(owner, repo, prNumber)
+	m.UpdatePRMetadataCalls = append(m.UpdatePRMetadataCalls, key)
 	if pr, exists := m.PRs[key]; exists {
 		pr.Title = title
 		pr.Author = author
