@@ -1060,7 +1060,7 @@ func buildCIStatusQuery(prs []PRInfo) string {
 	for i, pr := range prs {
 		alias := fmt.Sprintf("pr%d", i)
 		queryBuilder.WriteString(fmt.Sprintf(`
-			%s: repository(owner: "%s", name: "%s") {
+			%s: repository(owner: %q, name: %q) {
 				pullRequest(number: %d) {
 					commits(last: 1) {
 						nodes {

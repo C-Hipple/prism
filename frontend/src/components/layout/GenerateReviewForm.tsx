@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { generateReview } from '@/api/prs';
 import { APIError } from '@/api/client';
 import { parsePRRef } from '@/utils/parsePRRef';
@@ -23,6 +23,10 @@ export function GenerateReviewForm() {
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { track } = useTelemetry();
+
+  useEffect(() => () => {
+    if (resetTimer.current) clearTimeout(resetTimer.current);
+  }, []);
 
   const showStatus = (next: Status) => {
     setStatus(next);
