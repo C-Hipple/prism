@@ -22,14 +22,30 @@ describe('useUrlFilters', () => {
     expect(result.current.searchTerm).toBe('');
     expect(result.current.selectedTeams).toEqual([]);
     expect(result.current.selectedRepos).toEqual([]);
+    expect(result.current.selectedStates).toEqual([]);
   });
 
   it('initializes from URL params', () => {
-    window.history.replaceState(null, '', '/?q=fix&team=core&team=infra&repo=acme%2Fexample');
+    window.history.replaceState(null, '', '/?q=fix&team=core&team=infra&repo=acme%2Fexample&state=draft');
     const { result } = renderHook(() => useUrlFilters());
     expect(result.current.searchTerm).toBe('fix');
     expect(result.current.selectedTeams).toEqual(['core', 'infra']);
     expect(result.current.selectedRepos).toEqual(['acme/example']);
+    expect(result.current.selectedStates).toEqual(['draft']);
+  });
+
+  it('ignores unknown state values in the URL', () => {
+    window.history.replaceState(null, '', '/?state=draft&state=bogus&state=ready');
+    const { result } = renderHook(() => useUrlFilters());
+    expect(result.current.selectedStates).toEqual(['draft', 'ready']);
+  });
+
+  it('pushes state changes to the URL immediately', () => {
+    const { result } = renderHook(() => useUrlFilters());
+    act(() => result.current.setSelectedStates(['ready']));
+    expect(currentUrl()).toBe('/?state=ready');
+    act(() => result.current.setSelectedStates([]));
+    expect(currentUrl()).toBe('/');
   });
 
   it('pushes team and repo changes to the URL immediately', () => {

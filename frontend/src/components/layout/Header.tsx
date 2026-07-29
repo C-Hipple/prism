@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useTelemetry } from '@/hooks/useTelemetry';
+import { GenerateReviewForm } from './GenerateReviewForm';
 
 export function Header() {
   const [isPolling, setIsPolling] = useState(false);
@@ -25,6 +26,7 @@ export function Header() {
         <p className="app-header__subtitle">PR Review Dashboard</p>
       </div>
       <div className="app-header__actions">
+        <GenerateReviewForm />
         <a
           href="/usage-stats"
           className="app-header__action-link"
