@@ -3,7 +3,13 @@ import { usePRs } from '@/hooks/usePRs';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useTelemetry } from '@/hooks/useTelemetry';
 import { getTeamFilterName } from '@/utils/teamFilters';
+import type { PRStateFilter } from '@/hooks/useUrlFilters';
 import './FilterBar.scss';
+
+const PR_STATES: { value: PRStateFilter; label: string }[] = [
+  { value: 'ready', label: 'Ready for review' },
+  { value: 'draft', label: 'Draft' },
+];
 
 interface FilterBarProps {
   className?: string;
@@ -12,6 +18,8 @@ interface FilterBarProps {
   onTeamsChange: (teams: string[]) => void;
   selectedRepos: string[];
   onReposChange: (repos: string[]) => void;
+  selectedStates: PRStateFilter[];
+  onStatesChange: (states: PRStateFilter[]) => void;
 }
 
 export function FilterBar({
@@ -21,6 +29,8 @@ export function FilterBar({
   onTeamsChange,
   selectedRepos,
   onReposChange,
+  selectedStates,
+  onStatesChange,
 }: FilterBarProps) {
   const { data: prs } = usePRs();
   const { data: currentUser } = useCurrentUser();
@@ -35,7 +45,7 @@ export function FilterBar({
   const allRepos = Array.from(new Set((prs || []).map(pr => `${pr.owner}/${pr.repo}`))).sort();
   const availableRepos = allRepos.filter(r => !selectedRepos.includes(r));
 
-  const activeCount = selectedTeams.length + selectedRepos.length;
+  const activeCount = selectedTeams.length + selectedRepos.length + selectedStates.length;
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -68,13 +78,23 @@ export function FilterBar({
     setRepoDropdownOpen(false);
   };
 
-  const clearAll = () => {
-    track('clear_filters', { label: `teams:${selectedTeams.length},repos:${selectedRepos.length}` });
-    onTeamsChange([]);
-    onReposChange([]);
+  const toggleState = (state: PRStateFilter) => {
+    if (selectedStates.includes(state)) {
+      track('filter_state', { label: `remove:${state}` });
+      onStatesChange(selectedStates.filter(s => s !== state));
+    } else {
+      track('filter_state', { label: `add:${state}` });
+      onStatesChange([...selectedStates, state]);
+    }
   };
 
-  if (allTeams.length === 0 && allRepos.length === 0) return null;
+  const clearAll = () => {
+    track('clear_filters', { label: `teams:${selectedTeams.length},repos:${selectedRepos.length},states:${selectedStates.length}` });
+    onTeamsChange([]);
+    onReposChange([]);
+    onStatesChange([]);
+  };
+
 
   return (
     <div className={`filter-bar filter-bar--${layout} ${className}`.trim()}>
@@ -95,6 +115,28 @@ export function FilterBar({
 
       {!collapsed && (
         <div className="filter-bar__content">
+          <div className="filter-bar__section">
+            <span className="filter-bar__label">Status</span>
+            <div className="filter-bar__chips">
+              {PR_STATES.map(({ value, label }) => (
+                <button
+                  key={value}
+                  className={`filter-chip ${selectedStates.includes(value) ? 'filter-chip--active' : ''}`}
+                  onClick={() => toggleState(value)}
+                >
+                  <span className="filter-chip__label">{label}</span>
+                  {selectedStates.includes(value) && (
+                    <span className="filter-chip__remove" onClick={(e) => { e.stopPropagation(); toggleState(value); }}>
+                      <svg width="10" height="10" viewBox="0 0 10 10">
+                        <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {allTeams.length > 0 && (
             <div className="filter-bar__section">
               <span className="filter-bar__label">Teams</span>

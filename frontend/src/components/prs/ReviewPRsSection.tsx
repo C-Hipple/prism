@@ -7,6 +7,7 @@ import { LoadingSpinner, ErrorMessage } from '@/components/common';
 import { PR } from '@/types/pr';
 import { getTeamFilterName } from '@/utils/teamFilters';
 import { TriageFilter, categorizePR } from './triageUtils';
+import type { PRStateFilter } from '@/hooks/useUrlFilters';
 import './SectionHeader.scss';
 
 interface ReviewPRsSectionProps {
@@ -14,16 +15,18 @@ interface ReviewPRsSectionProps {
   triageFilter?: TriageFilter | null;
   selectedTeams?: string[];
   selectedRepos?: string[];
+  selectedStates?: PRStateFilter[];
 }
 
 interface FilterOptions {
   searchTerm: string;
   selectedTeams?: string[];
   selectedRepos?: string[];
+  selectedStates?: PRStateFilter[];
   username?: string;
 }
 
-function filterAndSortPRs(prs: PR[], { searchTerm, selectedTeams, selectedRepos, username }: FilterOptions): PR[] {
+function filterAndSortPRs(prs: PR[], { searchTerm, selectedTeams, selectedRepos, selectedStates, username }: FilterOptions): PR[] {
   return prs
     .filter((pr) => {
       if (searchTerm) {
@@ -45,6 +48,10 @@ function filterAndSortPRs(prs: PR[], { searchTerm, selectedTeams, selectedRepos,
         if (!selectedRepos.includes(`${pr.owner}/${pr.repo}`)) return false;
       }
 
+      if (selectedStates && selectedStates.length > 0) {
+        if (!selectedStates.includes(pr.draft ? 'draft' : 'ready')) return false;
+      }
+
       return true;
     })
     .sort((a, b) => {
@@ -60,6 +67,7 @@ export function ReviewPRsSection({
   triageFilter = null,
   selectedTeams = [],
   selectedRepos = [],
+  selectedStates = [],
 }: ReviewPRsSectionProps) {
   const { data: prs, isLoading, error } = usePRs();
   const { data: currentUser } = useCurrentUser();
@@ -76,6 +84,7 @@ export function ReviewPRsSection({
     searchTerm,
     selectedTeams,
     selectedRepos,
+    selectedStates,
     username: currentUser?.github_username,
   };
 

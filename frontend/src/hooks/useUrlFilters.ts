@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+export type PRStateFilter = 'draft' | 'ready';
+
 export interface UrlFilters {
   searchTerm: string;
   selectedTeams: string[];
   selectedRepos: string[];
+  selectedStates: PRStateFilter[];
 }
 
 // How long to wait after the last keystroke before pushing the search term
@@ -16,6 +19,9 @@ function readFiltersFromUrl(): UrlFilters {
     searchTerm: params.get('q') ?? '',
     selectedTeams: params.getAll('team'),
     selectedRepos: params.getAll('repo'),
+    selectedStates: params
+      .getAll('state')
+      .filter((s): s is PRStateFilter => s === 'draft' || s === 'ready'),
   };
 }
 
@@ -24,9 +30,11 @@ function buildUrl(filters: UrlFilters): string {
   params.delete('q');
   params.delete('team');
   params.delete('repo');
+  params.delete('state');
   if (filters.searchTerm) params.set('q', filters.searchTerm);
   for (const team of filters.selectedTeams) params.append('team', team);
   for (const repo of filters.selectedRepos) params.append('repo', repo);
+  for (const state of filters.selectedStates) params.append('state', state);
   const search = params.toString();
   return `${window.location.pathname}${search ? `?${search}` : ''}${window.location.hash}`;
 }
@@ -92,12 +100,19 @@ export function useUrlFilters() {
     [applyFilters]
   );
 
+  const setSelectedStates = useCallback(
+    (selectedStates: PRStateFilter[]) => applyFilters({ ...filtersRef.current, selectedStates }),
+    [applyFilters]
+  );
+
   return {
     searchTerm: filters.searchTerm,
     selectedTeams: filters.selectedTeams,
     selectedRepos: filters.selectedRepos,
+    selectedStates: filters.selectedStates,
     setSearchTerm,
     setSelectedTeams,
     setSelectedRepos,
+    setSelectedStates,
   };
 }

@@ -46,3 +46,19 @@ export interface TriggerReviewParams {
 export async function triggerReview(params: TriggerReviewParams): Promise<{ status: string }> {
   return apiPost<{ status: string }>('/api/prs/trigger-review', params);
 }
+
+export interface GenerateReviewResponse {
+  status: string;
+  commit: string;
+  state: string;
+  merged: boolean;
+  review_url: string;
+  findings_url: string;
+}
+
+// Unlike triggerReview, this works for PRs the poller hasn't ingested
+// (merged/closed PRs, or any repo the server can read): the server fetches
+// the PR from GitHub, upserts it, and starts the review in the background.
+export async function generateReview(params: TriggerReviewParams): Promise<GenerateReviewResponse> {
+  return apiPost<GenerateReviewResponse>('/api/prs/generate-review', params);
+}

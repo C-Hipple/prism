@@ -73,6 +73,8 @@ function AppContent() {
     setSelectedTeams,
     selectedRepos,
     setSelectedRepos,
+    selectedStates,
+    setSelectedStates,
   } = useUrlFilters();
 
   // Shared WebSocket connection
@@ -108,6 +110,8 @@ function AppContent() {
           onTeamsChange={setSelectedTeams}
           selectedRepos={selectedRepos}
           onReposChange={setSelectedRepos}
+          selectedStates={selectedStates}
+          onStatesChange={setSelectedStates}
         />
         <div className="search-container">
           <input
@@ -125,6 +129,7 @@ function AppContent() {
         searchTerm={searchTerm}
         selectedTeams={selectedTeams}
         selectedRepos={selectedRepos}
+        selectedStates={selectedStates}
       />
     </div>
   );

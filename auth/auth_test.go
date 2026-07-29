@@ -146,6 +146,9 @@ func (m *MockDatabase) UpdatePRCreatedAt(owner, repo string, prNumber int, creat
 func (m *MockDatabase) UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int, updatedAt time.Time) error {
 	return nil
 }
+func (m *MockDatabase) UpdatePRDraft(owner, repo string, prNumber int, draft bool) error {
+	return nil
+}
 func (m *MockDatabase) GetSetting(key string) (string, error)        { return "", nil }
 func (m *MockDatabase) SetSetting(key, value string) error           { return nil }
 func (m *MockDatabase) GetAutoReviewRequestedPRs() (bool, error)     { return false, nil }

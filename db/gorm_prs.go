@@ -492,3 +492,11 @@ func (g *GormDB) UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int, updat
 		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
 		Update("github_updated_at", updatedAt).Error
 }
+
+// UpdatePRDraft updates only the draft flag, used by the poller's draft-sync
+// pass when GitHub reports a different draft state than we have stored.
+func (g *GormDB) UpdatePRDraft(owner, repo string, prNumber int, draft bool) error {
+	return g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Update("draft", draft).Error
+}

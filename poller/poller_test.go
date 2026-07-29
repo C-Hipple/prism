@@ -1351,6 +1351,79 @@ func TestPoll_CleansUpClosedPRs(t *testing.T) {
 	}
 }
 
+func TestPoll_SyncsDraftStateFromGitHub(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockStorage := NewMockReviewStorage()
+	mockGenerator := NewMockReviewGenerator()
+
+	sha := "abc123def456789012345678901234567890abcd"
+
+	// Setup: DB thinks PR 1 is a draft and PR 2 is ready — GitHub says the
+	// opposite for PR 1 (marked ready for review) and agrees on PR 2.
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: sha, Status: "completed", Draft: true,
+	}
+	mockDB.PRs["owner/repo/2"] = &db.PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 2,
+		LastCommitSHA: sha, Status: "completed", Draft: false,
+	}
+
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"owner/repo/1": {Owner: "owner", Repo: "repo", Number: 1, State: "OPEN", HeadRefOid: sha, IsDraft: false},
+		"owner/repo/2": {Owner: "owner", Repo: "repo", Number: 2, State: "OPEN", HeadRefOid: sha, IsDraft: false},
+	}
+
+	mockGH.PRsRequestingReview = []github.PullRequest{}
+	mockGH.MyOpenPRs = []github.PullRequest{}
+
+	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
+
+	// Execute poll
+	poller.poll(context.Background())
+
+	// Verify: PR 1's draft flag was synced to GitHub's value
+	if mockDB.PRs["owner/repo/1"].Draft {
+		t.Error("expected PR 1 draft flag to be synced to false (marked ready on GitHub)")
+	}
+	// Verify: PR 2 untouched
+	if mockDB.PRs["owner/repo/2"].Draft {
+		t.Error("expected PR 2 draft flag to remain false")
+	}
+	// Verify: neither PR was reset (draft sync must not clobber review state)
+	if mockDB.PRs["owner/repo/1"].Status != "completed" {
+		t.Errorf("expected PR 1 status to stay 'completed', got %q", mockDB.PRs["owner/repo/1"].Status)
+	}
+}
+
+func TestPoll_SyncsDraftStateReadyToDraft(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockStorage := NewMockReviewStorage()
+	mockGenerator := NewMockReviewGenerator()
+
+	sha := "abc123def456789012345678901234567890abcd"
+
+	// Setup: DB thinks the PR is ready; GitHub says it was converted to draft.
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: sha, Status: "completed", Draft: false,
+	}
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"owner/repo/1": {Owner: "owner", Repo: "repo", Number: 1, State: "OPEN", HeadRefOid: sha, IsDraft: true},
+	}
+	mockGH.PRsRequestingReview = []github.PullRequest{}
+	mockGH.MyOpenPRs = []github.PullRequest{}
+
+	poller := newTestPollerFull(mockGH, mockDB, mockStorage, mockGenerator)
+	poller.poll(context.Background())
+
+	if !mockDB.PRs["owner/repo/1"].Draft {
+		t.Error("expected PR draft flag to be synced to true (converted to draft on GitHub)")
+	}
+}
+
 func TestPoll_ProcessesDatabasePendingPRs(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	mockDB := NewMockDatabase()

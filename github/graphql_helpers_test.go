@@ -34,22 +34,39 @@ func TestBuildPRAliasMap(t *testing.T) {
 	}
 }
 
-func TestBuildPRInfoAliasMap(t *testing.T) {
-	prs := []PRInfoWithCommit{
-		{Owner: "owner1", Repo: "repo1", Number: 101, CommitSHA: "abc123"},
-		{Owner: "owner2", Repo: "repo2", Number: 102, CommitSHA: "def456"},
+func TestBuildCIStatusQuery(t *testing.T) {
+	prs := []PRInfo{
+		{Owner: "owner1", Repo: "repo1", Number: 101},
+		{Owner: "owner2", Repo: "repo2", Number: 102},
 	}
 
-	aliases := buildPRInfoAliasMap(prs)
+	query := buildCIStatusQuery(prs)
 
-	if len(aliases) != 2 {
-		t.Errorf("Expected 2 aliases, got %d", len(aliases))
+	// The query must target each PR's current head via commits(last: 1),
+	// never a stored commit oid (which can be stale after a push).
+	if strings.Contains(query, "object(oid:") {
+		t.Errorf("CI status query must not query by stored commit oid:\n%s", query)
 	}
+	for _, want := range []string{
+		`pr0: repository(owner: "owner1", name: "repo1")`,
+		`pullRequest(number: 101)`,
+		`pr1: repository(owner: "owner2", name: "repo2")`,
+		`pullRequest(number: 102)`,
+		`commits(last: 1)`,
+		`statusCheckRollup`,
+	} {
+		if !strings.Contains(query, want) {
+			t.Errorf("Expected CI status query to contain %q:\n%s", want, query)
+		}
+	}
+}
 
-	// Check first mapping
-	prInfo0 := aliases["pr0"]
-	if prInfo0.Owner != "owner1" || prInfo0.Repo != "repo1" || prInfo0.Number != 101 {
-		t.Errorf("Expected pr0 -> (owner1, repo1, 101), got (%s, %s, %d)", prInfo0.Owner, prInfo0.Repo, prInfo0.Number)
+func TestBuildPRStateQueryIncludesDraft(t *testing.T) {
+	query := buildPRStateQuery([]PRInfo{{Owner: "owner1", Repo: "repo1", Number: 7}})
+	for _, want := range []string{"state", "headRefOid", "isDraft"} {
+		if !strings.Contains(query, want) {
+			t.Errorf("Expected PR state query to contain %q:\n%s", want, query)
+		}
 	}
 }
 

@@ -225,6 +225,7 @@ func (c *Client) BatchGetPRState(ctx context.Context, prs []PRInfo) (map[string]
 					Number:     pr.Number,
 					State:      repoData.PullRequest.State,
 					HeadRefOid: repoData.PullRequest.HeadRefOid,
+					IsDraft:    repoData.PullRequest.IsDraft,
 				}
 			}
 			mu.Unlock()
@@ -354,6 +355,7 @@ type PRState struct {
 	Number     int
 	State      string // "OPEN", "CLOSED", "MERGED"
 	HeadRefOid string // current HEAD commit SHA
+	IsDraft    bool   // current draft status
 }
 
 // CIStatus holds CI check run status for a PR
@@ -974,25 +976,10 @@ func (c *Client) extractReviewerGroups(timelineItems TimelineItemsData) ([]strin
 
 // BatchGetCIStatus fetches CI check status for multiple PRs using batched GraphQL.
 // Batches into chunks of 50 PRs (CI queries are heavier due to statusCheckRollup contexts).
-func (c *Client) BatchGetCIStatus(ctx context.Context, prs []struct {
-	Owner, Repo string
-	Number      int
-	CommitSHA   string
-}) (map[string]*CIStatus, error) {
+func (c *Client) BatchGetCIStatus(ctx context.Context, prs []PRInfo) (map[string]*CIStatus, error) {
 	const batchSize = 50
 	if len(prs) == 0 {
 		return make(map[string]*CIStatus), nil
-	}
-
-	// Convert to PRInfoWithCommit slice
-	allInfos := make([]PRInfoWithCommit, len(prs))
-	for i, pr := range prs {
-		allInfos[i] = PRInfoWithCommit{
-			Owner:     pr.Owner,
-			Repo:      pr.Repo,
-			Number:    pr.Number,
-			CommitSHA: pr.CommitSHA,
-		}
 	}
 
 	var (
@@ -1002,21 +989,20 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []struct {
 		sem     = make(chan struct{}, 5)
 	)
 
-	for i := 0; i < len(allInfos); i += batchSize {
+	for i := 0; i < len(prs); i += batchSize {
 		end := i + batchSize
-		if end > len(allInfos) {
-			end = len(allInfos)
+		if end > len(prs) {
+			end = len(prs)
 		}
-		chunk := allInfos[i:end]
+		chunk := prs[i:end]
 
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(batch []PRInfoWithCommit) {
+		go func(batch []PRInfo) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
 			query := buildCIStatusQuery(batch)
-			prAliases := buildPRInfoAliasMap(batch)
 
 			var graphqlResp GraphQLCIStatusResponse
 			if err := c.executeGraphQL(ctx, query, &graphqlResp); err != nil {
@@ -1025,10 +1011,17 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []struct {
 			}
 
 			mu.Lock()
-			for alias, prInfo := range prAliases {
+			for j, prInfo := range batch {
+				alias := fmt.Sprintf("pr%d", j)
+				key := prKey(prInfo.Owner, prInfo.Repo, prInfo.Number)
 				repoData, ok := graphqlResp.Data[alias]
-				if !ok || repoData.Object == nil || repoData.Object.StatusCheckRollup == nil {
-					key := prKey(prInfo.Owner, prInfo.Repo, prInfo.Number)
+				var rollup *StatusCheckRollup
+				if ok && repoData.PullRequest != nil && len(repoData.PullRequest.Commits.Nodes) > 0 {
+					rollup = repoData.PullRequest.Commits.Nodes[0].Commit.StatusCheckRollup
+				}
+				if rollup == nil {
+					// No rollup means the head commit genuinely has no check
+					// contexts (yet) — report unknown rather than a stale state.
 					results[key] = &CIStatus{
 						Owner:        prInfo.Owner,
 						Repo:         prInfo.Repo,
@@ -1039,8 +1032,7 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []struct {
 					continue
 				}
 
-				state, failedChecks := parseCIStatusFromRollup(repoData.Object.StatusCheckRollup)
-				key := prKey(prInfo.Owner, prInfo.Repo, prInfo.Number)
+				state, failedChecks := parseCIStatusFromRollup(rollup)
 				results[key] = &CIStatus{
 					Owner:        prInfo.Owner,
 					Repo:         prInfo.Repo,
@@ -1059,30 +1051,37 @@ func (c *Client) BatchGetCIStatus(ctx context.Context, prs []struct {
 }
 
 // buildCIStatusQuery builds a GraphQL query to fetch CI status for multiple PRs.
-func buildCIStatusQuery(prs []PRInfoWithCommit) string {
+// It queries each PR's current head commit (commits(last: 1)) rather than a
+// stored commit oid, so the result always reflects the PR's actual HEAD —
+// including new pushes and force-pushes our database hasn't caught up with.
+func buildCIStatusQuery(prs []PRInfo) string {
 	var queryBuilder strings.Builder
 	queryBuilder.WriteString("query {")
 
 	for i, pr := range prs {
 		alias := fmt.Sprintf("pr%d", i)
 		queryBuilder.WriteString(fmt.Sprintf(`
-			%s: repository(owner: "%s", name: "%s") {
-				object(oid: "%s") {
-					... on Commit {
-						statusCheckRollup {
-							state
-							contexts(first: 100) {
-								nodes {
-									... on CheckRun {
-										__typename
-										name
-										conclusion
-										status
-									}
-									... on StatusContext {
-										__typename
-										context
-										state
+			%s: repository(owner: %q, name: %q) {
+				pullRequest(number: %d) {
+					commits(last: 1) {
+						nodes {
+							commit {
+								statusCheckRollup {
+									state
+									contexts(first: 100) {
+										nodes {
+											... on CheckRun {
+												__typename
+												name
+												conclusion
+												status
+											}
+											... on StatusContext {
+												__typename
+												context
+												state
+											}
+										}
 									}
 								}
 							}
@@ -1090,7 +1089,7 @@ func buildCIStatusQuery(prs []PRInfoWithCommit) string {
 					}
 				}
 			}`,
-			alias, pr.Owner, pr.Repo, pr.CommitSHA))
+			alias, pr.Owner, pr.Repo, pr.Number))
 	}
 	queryBuilder.WriteString("}")
 	return queryBuilder.String()

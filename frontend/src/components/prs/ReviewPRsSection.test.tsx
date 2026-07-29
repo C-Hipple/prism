@@ -151,6 +151,36 @@ describe('ReviewPRsSection', () => {
     expect(tables[1].textContent).toBe('Viewer billing fix');
   });
 
+  it('filters by draft vs ready-for-review state', () => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    usePRsMock.mockReturnValue({
+      data: [
+        makePR({ number: 21, title: 'Ready review PR', draft: false }),
+        makePR({ number: 22, title: 'Draft review PR', draft: true }),
+        makePR({ number: 23, title: 'My draft PR', draft: true, is_mine: true }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+
+    // Draft only: applies to My PRs and PRs to Review alike.
+    const draft = render(<ReviewPRsSection selectedStates={['draft']} />);
+    expect(draft.getByText('My PRs (1)')).toBeTruthy();
+    expect(draft.getByText('PRs to Review (1)')).toBeTruthy();
+    expect(draft.getAllByTestId('pr-table-rows')[1].textContent).toBe('Draft review PR');
+    cleanup();
+
+    // Ready only.
+    const ready = render(<ReviewPRsSection selectedStates={['ready']} />);
+    expect(ready.getByText('PRs to Review (1)')).toBeTruthy();
+    expect(ready.getAllByTestId('pr-table-rows')[0].textContent).toBe('Ready review PR');
+    cleanup();
+
+    // Both selected is equivalent to no state filter.
+    const both = render(<ReviewPRsSection selectedStates={['draft', 'ready']} />);
+    expect(both.getByText('PRs to Review (2)')).toBeTruthy();
+  });
+
   it('matches personal team filters after username normalization', () => {
     useTelemetryMock.mockReturnValue({ track: vi.fn() });
     usePRsMock.mockReturnValue({
