@@ -1167,6 +1167,19 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			continue
 		}
 
+		// --- Draft-state sync ---
+		// The metadata phases rebuild known PRs from the DB, so a draft↔ready
+		// flip on GitHub would otherwise never reach us. This state query is
+		// the one place we get fresh per-PR data every cycle — sync it here.
+		if state.IsDraft != pr.Draft {
+			log.Printf("[DRAFT-SYNC] PR %s draft state changed on GitHub: %t -> %t", key, pr.Draft, state.IsDraft)
+			if err := p.db.UpdatePRDraft(pr.RepoOwner, pr.RepoName, pr.PRNumber, state.IsDraft); err != nil {
+				log.Printf("[DRAFT-SYNC] ERROR: Failed to update draft state for PR %s: %v", key, err)
+			} else {
+				p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			}
+		}
+
 		// --- Outdated review detection ---
 		if state.HeadRefOid != pr.LastCommitSHA {
 			wasInFlight := isReviewInFlight(pr.Status)
@@ -1823,28 +1836,21 @@ func (p *Poller) poll(ctx context.Context) {
 
 		// Fetch CI status for ALL PRs every cycle — CI check completions
 		// don't update GitHub's PR updated_at, so we can't rely on change detection.
+		// The query targets each PR's current head commit on GitHub, so the result
+		// is correct even when our stored SHA is behind (new push / force-push).
 		fetchWg.Add(1)
 		go func() {
 			defer fetchWg.Done()
-			var prsWithSHA []struct {
-				Owner, Repo string
-				Number      int
-				CommitSHA   string
-			}
+			ciPRs := make([]github.PRInfo, 0, len(allPRs))
 			for _, pr := range allPRs {
-				prsWithSHA = append(prsWithSHA, struct {
-					Owner, Repo string
-					Number      int
-					CommitSHA   string
-				}{
-					Owner:     pr.Owner,
-					Repo:      pr.Repo,
-					Number:    pr.Number,
-					CommitSHA: pr.CommitSHA,
+				ciPRs = append(ciPRs, github.PRInfo{
+					Owner:  pr.Owner,
+					Repo:   pr.Repo,
+					Number: pr.Number,
 				})
 			}
 			var err error
-			ciStatusMap, err = p.ghClient.BatchGetCIStatus(ctx, prsWithSHA)
+			ciStatusMap, err = p.ghClient.BatchGetCIStatus(ctx, ciPRs)
 			if err != nil {
 				log.Printf("[POLL] WARNING: Failed to batch fetch CI status: %v", err)
 				ciStatusMap = nil

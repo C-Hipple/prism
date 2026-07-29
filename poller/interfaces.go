@@ -35,12 +35,9 @@ type GitHubClient interface {
 	// BatchGetPRReviewData fetches review data for multiple PRs efficiently using GraphQL
 	BatchGetPRReviewData(ctx context.Context, prs []github.PullRequest) (map[string]*github.PRReviewData, error)
 
-	// BatchGetCIStatus fetches CI check status for multiple PRs using GraphQL
-	BatchGetCIStatus(ctx context.Context, prs []struct {
-		Owner, Repo string
-		Number      int
-		CommitSHA   string
-	}) (map[string]*github.CIStatus, error)
+	// BatchGetCIStatus fetches CI check status for multiple PRs using GraphQL.
+	// The status is always for each PR's current head commit on GitHub.
+	BatchGetCIStatus(ctx context.Context, prs []github.PRInfo) (map[string]*github.CIStatus, error)
 
 	// BatchGetReviewerGroups fetches reviewer group info for multiple PRs using GraphQL
 	BatchGetReviewerGroups(ctx context.Context, prs []github.PullRequest) (map[string]*github.ReviewerGroupData, error)

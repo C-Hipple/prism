@@ -215,6 +215,7 @@ type Database interface {
 	GetPRsWithMissingCreatedAt() ([]PR, error)
 	UpdatePRCreatedAt(owner, repo string, prNumber int, createdAt time.Time) error
 	UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int, updatedAt time.Time) error
+	UpdatePRDraft(owner, repo string, prNumber int, draft bool) error
 
 	// Settings operations
 	GetSetting(key string) (string, error)

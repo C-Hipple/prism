@@ -203,11 +203,7 @@ func (m *MockGitHubClient) BatchGetPRReviewData(ctx context.Context, prs []githu
 	return m.BatchGetPRReviewDataResults, nil
 }
 
-func (m *MockGitHubClient) BatchGetCIStatus(ctx context.Context, prs []struct {
-	Owner, Repo string
-	Number      int
-	CommitSHA   string
-}) (map[string]*github.CIStatus, error) {
+func (m *MockGitHubClient) BatchGetCIStatus(ctx context.Context, prs []github.PRInfo) (map[string]*github.CIStatus, error) {
 	return m.BatchGetCIStatusResults, nil
 }
 
@@ -527,6 +523,15 @@ func (m *MockDatabase) UpdatePRCreatedAt(owner, repo string, prNumber int, creat
 }
 
 func (m *MockDatabase) UpdatePRGitHubUpdatedAt(owner, repo string, prNumber int, updatedAt time.Time) error {
+	return nil
+}
+
+func (m *MockDatabase) UpdatePRDraft(owner, repo string, prNumber int, draft bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pr, exists := m.PRs[prDBKey(owner, repo, prNumber)]; exists {
+		pr.Draft = draft
+	}
 	return nil
 }
 

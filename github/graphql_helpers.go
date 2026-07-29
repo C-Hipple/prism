@@ -153,21 +153,6 @@ func buildPRAliasMap(prs []PullRequest) map[string]int {
 	return aliases
 }
 
-// buildPRInfoAliasMap creates a mapping from PR aliases to full PR info structs.
-// This is used for CI status queries that need owner/repo/number info.
-func buildPRInfoAliasMap(prs []PRInfoWithCommit) map[string]PRInfo {
-	aliases := make(map[string]PRInfo)
-	for i, pr := range prs {
-		alias := fmt.Sprintf("pr%d", i)
-		aliases[alias] = PRInfo{
-			Owner:  pr.Owner,
-			Repo:   pr.Repo,
-			Number: pr.Number,
-		}
-	}
-	return aliases
-}
-
 // isValidReviewState checks if a review state should be considered for approval counting.
 // PENDING and DISMISSED states are excluded.
 func isValidReviewState(state string) bool {
@@ -225,7 +210,7 @@ func buildPRStateQuery(prs []PRInfo) string {
 	var qb strings.Builder
 	qb.WriteString("query {")
 	for i, pr := range prs {
-		fmt.Fprintf(&qb, ` pr%d: repository(owner: %q, name: %q) { pullRequest(number: %d) { state headRefOid } }`, i, pr.Owner, pr.Repo, pr.Number)
+		fmt.Fprintf(&qb, ` pr%d: repository(owner: %q, name: %q) { pullRequest(number: %d) { state headRefOid isDraft } }`, i, pr.Owner, pr.Repo, pr.Number)
 	}
 	qb.WriteString(" }")
 	return qb.String()

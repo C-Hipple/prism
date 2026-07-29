@@ -100,9 +100,23 @@ type CommitObject struct {
 	StatusCheckRollup *StatusCheckRollup `json:"statusCheckRollup"`
 }
 
+// CICommitNode wraps the commit inside a PR's commits connection
+type CICommitNode struct {
+	Commit CommitObject `json:"commit"`
+}
+
+// CIPullRequestData holds the last commit of a PR for CI status queries.
+// Querying commits(last: 1) instead of object(oid:) means the rollup is
+// always for the PR's actual current head, even if our stored SHA is stale.
+type CIPullRequestData struct {
+	Commits struct {
+		Nodes []CICommitNode `json:"nodes"`
+	} `json:"commits"`
+}
+
 // RepoCIStatusData represents repository data containing CI status info
 type RepoCIStatusData struct {
-	Object *CommitObject `json:"object"`
+	PullRequest *CIPullRequestData `json:"pullRequest"`
 }
 
 // GraphQLCIStatusResponse represents the full GraphQL response for CI status queries
@@ -116,6 +130,7 @@ type GraphQLCIStatusResponse struct {
 type PRStateGraphQL struct {
 	State      string `json:"state"`      // OPEN, CLOSED, MERGED
 	HeadRefOid string `json:"headRefOid"` // current HEAD SHA
+	IsDraft    bool   `json:"isDraft"`
 }
 
 // RepoStateData represents repository data containing PR state info
@@ -134,14 +149,6 @@ type PRInfo struct {
 	Repo      string
 	Number    int
 	UpdatedAt *time.Time // GitHub updated_at (populated by search, nil otherwise)
-}
-
-// PRInfoWithCommit holds PR identification info including commit SHA
-type PRInfoWithCommit struct {
-	Owner     string
-	Repo      string
-	Number    int
-	CommitSHA string
 }
 
 // PRDetailsAuthor represents the author in a PR details GraphQL response
