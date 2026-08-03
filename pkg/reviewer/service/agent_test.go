@@ -224,9 +224,8 @@ func TestParseAgentStream_DiagnosticFallsBackToLastEvent(t *testing.T) {
 	}
 }
 
-// TestParseAgentStream_KillsOnScannerOverflow — a stream line over the 8MB
-// scanner cap must kill the subprocess; otherwise nothing drains its stdout
-// and proc.Wait() stalls until the wall-clock watcher fires.
+// TestParseAgentStream_KillsOnScannerOverflow — a line over the 8MB scanner
+// cap must kill the subprocess, or proc.Wait() stalls on the undrained pipe.
 func TestParseAgentStream_KillsOnScannerOverflow(t *testing.T) {
 	huge := `{"type":"assistant","message":{"content":[{"type":"text","text":"` +
 		strings.Repeat("x", 9*1024*1024) + `"}]}}` + "\n"
@@ -245,11 +244,6 @@ func TestParseAgentStream_KillsOnScannerOverflow(t *testing.T) {
 	}
 }
 
-// TestRunAgentReview_FailureSurfacesStreamErrorAndPersistsLog locks in the
-// two failure-path behaviors: the CLI's stdout-reported error appears in the
-// returned error (stderr is empty under stream-json, so exit status alone is
-// undiagnosable), and the raw jsonl is handed to FailureLogSink before the
-// error returns.
 func TestRunAgentReview_FailureSurfacesStreamErrorAndPersistsLog(t *testing.T) {
 	bare, sha := setupLocalBareRepo(t)
 	cloneRoot := t.TempDir()
@@ -299,8 +293,6 @@ func TestRunAgentReview_FailureSurfacesStreamErrorAndPersistsLog(t *testing.T) {
 	assertLogsDirEmpty(t, cfg.LogsDir)
 }
 
-// assertLogsDirEmpty checks the local jsonl was cleaned up (it is removed
-// once persisted to the sink, or on success).
 func assertLogsDirEmpty(t *testing.T, logsDir string) {
 	t.Helper()
 	entries, err := os.ReadDir(logsDir)
@@ -312,9 +304,8 @@ func assertLogsDirEmpty(t *testing.T, logsDir string) {
 	}
 }
 
-// TestRunAgentReview_ErrorResultEventWithZeroExit — the CLI can report an
-// error result event and still exit 0. That must fail the review (and hit
-// the sink), not publish the API error text as a successful SUMMARY.
+// TestRunAgentReview_ErrorResultEventWithZeroExit — an error result event
+// with exit 0 must fail the review, not publish as a successful SUMMARY.
 func TestRunAgentReview_ErrorResultEventWithZeroExit(t *testing.T) {
 	bare, sha := setupLocalBareRepo(t)
 	cloneRoot := t.TempDir()
@@ -350,9 +341,8 @@ func TestRunAgentReview_ErrorResultEventWithZeroExit(t *testing.T) {
 	}
 }
 
-// TestRunAgentReview_FailureWithoutSinkKeepsLog — with no sink configured
-// (local dev) the on-disk jsonl is the only record of a failed run and must
-// survive.
+// TestRunAgentReview_FailureWithoutSinkKeepsLog — with no sink (local dev)
+// the on-disk jsonl is the only record of a failed run and must survive.
 func TestRunAgentReview_FailureWithoutSinkKeepsLog(t *testing.T) {
 	bare, sha := setupLocalBareRepo(t)
 	cloneRoot := t.TempDir()

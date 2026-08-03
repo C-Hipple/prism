@@ -268,10 +268,8 @@ func (p *Poller) loadBugMemory() {
 func (p *Poller) SetAgentSpawner(s service.Spawner) { p.agentSpawner = s }
 
 // persistAgentFailureLog uploads a failed agent run's raw stream-json log to
-// GCS under agent-logs/. The local file lives on /tmp (= instance memory on
-// Cloud Run), so this is the only durable record of what the claude CLI
-// reported. Best-effort: a review failure must never be masked by an upload
-// failure.
+// GCS under agent-logs/ — the only durable record of what the claude CLI
+// reported. Best-effort: an upload failure must never mask the review error.
 func (p *Poller) persistAgentFailureLog(logPath string) {
 	if p.gcsClient == nil {
 		return

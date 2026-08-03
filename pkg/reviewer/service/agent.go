@@ -48,11 +48,9 @@ type AgentConfig struct {
 	// the prompt and outputs are byte-identical to a checkless run.
 	RequiredChecks bool
 
-	// FailureLogSink, when non-nil, receives the raw stream-json log path
-	// after a failed claude run, before the error is returned. LogsDir lives
-	// on /tmp (= instance memory on Cloud Run), so without a sink the only
-	// record of what the CLI actually said dies with the instance. Called
-	// synchronously; implementations should be best-effort and never panic.
+	// FailureLogSink, when non-nil, is called synchronously with the raw
+	// stream-json log path after a failed run, before the error returns —
+	// LogsDir is ephemeral, so this is the log's only path off the instance.
 	FailureLogSink func(logPath string)
 }
 
@@ -237,10 +235,8 @@ func RunAgentReview(
 	}
 	defer logFile.Close()
 
-	// LogsDir sits on /tmp (= instance memory on Cloud Run), so the jsonl is
-	// kept only while it's the sole record of the run: removed on success, and
-	// on failure once FailureLogSink has persisted it. With no sink configured
-	// (local dev) failure logs stay on disk for inspection.
+	// LogsDir is /tmp (= instance memory on Cloud Run): remove the jsonl once
+	// it isn't the sole record of the run. No sink (local dev) = keep on failure.
 	logRemovable := false
 	defer func() {
 		if logRemovable {
@@ -264,8 +260,6 @@ func RunAgentReview(
 	waitErr := proc.Wait()
 	stderrWG.Wait()
 
-	// Flush the teed stream and hand it to the sink before returning any
-	// failure, so the raw jsonl survives the instance.
 	persistFailureLog := func() {
 		if agentCfg.FailureLogSink == nil {
 			return
@@ -293,9 +287,8 @@ func RunAgentReview(
 			waitErr, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
 	}
 
-	// An error result event can arrive with a zero exit code; without this
-	// gate the error text would land in finalOutput, fail JSON parsing, and
-	// be published as a "successful" review whose SUMMARY is the API error.
+	// The CLI can exit 0 after an error result event; ungated, the error text
+	// would publish as a "successful" SUMMARY review.
 	if parseResult.streamErr != "" {
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (stderr: %s)",
@@ -654,10 +647,9 @@ type agentParseResult struct {
 	lastEvent      string // raw last stream line, fallback diagnostic when no structured error arrived
 }
 
-// diagnostic returns the best available explanation of a failed run. The CLI
-// reports API/auth/limit errors on stdout as stream-json (stderr stays empty
-// under --output-format stream-json), so a bare exit status is uninformative
-// without this.
+// diagnostic returns the best available explanation of a failed run — under
+// stream-json the CLI reports errors on stdout and stderr stays empty, so a
+// bare exit status is uninformative.
 func (r *agentParseResult) diagnostic() string {
 	if r.streamErr != "" {
 		return r.streamErr
@@ -722,9 +714,8 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 	}
 
 	if err := scanner.Err(); err != nil {
-		// Kill here too (like the max-turns path): the subprocess is still
-		// running with nothing draining its stdout, so leaving it alive stalls
-		// proc.Wait() until the wall-clock watcher fires.
+		// Nothing drains stdout after this return; unkilled, proc.Wait()
+		// stalls until the wall-clock watcher fires.
 		_ = proc.Kill()
 		return result, fmt.Errorf("read stdout: %w", err)
 	}
