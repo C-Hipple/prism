@@ -156,6 +156,159 @@ func TestParseAgentStream_MaxTurnsKills(t *testing.T) {
 	}
 }
 
+// fakeSpawner returns a canned process regardless of the command.
+type fakeSpawner struct {
+	proc *fakeProcess
+}
+
+func (s *fakeSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
+	return s.proc, nil
+}
+
+// seedAgentCache pre-populates the clone cache for owner/repo with a clone of
+// the local bare repo, so cloneForAgent's cache-hit path runs and never
+// touches github.com.
+func seedAgentCache(t *testing.T, cloneRoot, owner, repo, bareURL string) {
+	t.Helper()
+	cacheDir := filepath.Join(cloneRoot, ".cache", owner+"__"+repo)
+	if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "clone", "--quiet", bareURL, cacheDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("seed cache clone: %v (%s)", err, out)
+	}
+}
+
+func TestParseAgentStream_CapturesStreamError(t *testing.T) {
+	stream := `{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}
+{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: spend limit exceeded"}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseAgentStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if !strings.Contains(res.streamErr, "spend limit exceeded") {
+		t.Errorf("streamErr missing CLI error: %q", res.streamErr)
+	}
+	if !strings.Contains(res.diagnostic(), "error_during_execution") {
+		t.Errorf("diagnostic missing subtype: %q", res.diagnostic())
+	}
+}
+
+func TestParseAgentStream_DiagnosticFallsBackToLastEvent(t *testing.T) {
+	stream := `{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"thinking"}]}}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseAgentStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if res.streamErr != "" {
+		t.Errorf("unexpected streamErr: %q", res.streamErr)
+	}
+	if !strings.Contains(res.diagnostic(), "thinking") {
+		t.Errorf("diagnostic should carry the last event: %q", res.diagnostic())
+	}
+}
+
+// TestRunAgentReview_FailureSurfacesStreamErrorAndPersistsLog locks in the
+// two failure-path behaviors: the CLI's stdout-reported error appears in the
+// returned error (stderr is empty under stream-json, so exit status alone is
+// undiagnosable), and the raw jsonl is handed to FailureLogSink before the
+// error returns.
+func TestRunAgentReview_FailureSurfacesStreamErrorAndPersistsLog(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	stream := `{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}
+{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: spend limit exceeded"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout:  bytes.NewBufferString(stream),
+		stderr:  &bytes.Buffer{},
+		waitErr: errors.New("exit status 1"),
+		killCh:  make(chan struct{}),
+	}}
+
+	var sinkCalls int
+	var sinkContent []byte
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+		FailureLogSink: func(logPath string) {
+			sinkCalls++
+			b, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Errorf("sink could not read log: %v", err)
+			}
+			sinkContent = b
+		},
+	}
+
+	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "spend limit exceeded") {
+		t.Errorf("error should carry the CLI's stream error, got: %v", err)
+	}
+	if sinkCalls != 1 {
+		t.Fatalf("FailureLogSink calls: got %d want 1", sinkCalls)
+	}
+	if !bytes.Contains(sinkContent, []byte("error_during_execution")) {
+		t.Errorf("persisted log missing error event: %s", sinkContent)
+	}
+}
+
+func TestRunAgentReview_SuccessDoesNotPersistLog(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(fakeStream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+
+	var sinkCalls int
+	cfg := AgentConfig{
+		CloneRootDir:   cloneRoot,
+		LogsDir:        t.TempDir(),
+		WallClock:      time.Minute,
+		MaxTurns:       10,
+		FailureLogSink: func(string) { sinkCalls++ },
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if out == nil || len(out.Comments) == 0 {
+		t.Error("expected comments from the canned stream")
+	}
+	if sinkCalls != 0 {
+		t.Errorf("FailureLogSink must not fire on success, fired %d time(s)", sinkCalls)
+	}
+}
+
 // TestCloneForAgent_LocalBare exercises the real clone path against a local
 // bare repo (no network).
 func TestCloneForAgent_LocalBare(t *testing.T) {

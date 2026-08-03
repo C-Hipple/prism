@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -46,6 +47,13 @@ type AgentConfig struct {
 	// deterministically post-parse (see checks.go). Off by default; when off
 	// the prompt and outputs are byte-identical to a checkless run.
 	RequiredChecks bool
+
+	// FailureLogSink, when non-nil, receives the raw stream-json log path
+	// after a failed claude run, before the error is returned. LogsDir lives
+	// on /tmp (= instance memory on Cloud Run), so without a sink the only
+	// record of what the CLI actually said dies with the instance. Called
+	// synchronously; implementations should be best-effort and never panic.
+	FailureLogSink func(logPath string)
 }
 
 // AgentReview is the result of a successful agent run.
@@ -245,24 +253,39 @@ func RunAgentReview(
 	waitErr := proc.Wait()
 	stderrWG.Wait()
 
+	// Flush the teed stream and hand it to the sink before returning any
+	// failure, so the raw jsonl survives the instance.
+	persistFailureLog := func() {
+		if agentCfg.FailureLogSink == nil {
+			return
+		}
+		_ = logFile.Sync()
+		agentCfg.FailureLogSink(logPath)
+	}
+
 	if parseErr != nil {
 		// Turn-cap hit or parse error — subprocess already killed inside parser.
+		persistFailureLog()
 		return nil, fmt.Errorf("agent: %w (stderr: %s)", parseErr, truncate(stderrBuf.String(), 1000))
 	}
 
 	if runCtx.Err() == context.DeadlineExceeded {
+		persistFailureLog()
 		return nil, fmt.Errorf("agent: wall-clock timeout (%s) after %d turns (stderr: %s)",
 			agentCfg.WallClock, parseResult.assistantTurns, truncate(stderrBuf.String(), 1000))
 	}
 
 	if waitErr != nil {
-		return nil, fmt.Errorf("agent: claude exited with error: %w (stderr: %s)",
-			waitErr, truncate(stderrBuf.String(), 1000))
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: claude exited with error: %w (stream: %s) (stderr: %s)",
+			waitErr, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	if parseResult.finalOutput == "" {
 		log.Printf("%s claude finished with no final result after %d turn(s)", logPrefix, parseResult.assistantTurns)
-		return nil, fmt.Errorf("agent: no final result emitted (stderr: %s)", truncate(stderrBuf.String(), 1000))
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: no final result emitted after %d turn(s) (stream: %s) (stderr: %s)",
+			parseResult.assistantTurns, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	comments, parseErr := parseAgentJSON(parseResult.finalOutput)
@@ -605,6 +628,22 @@ func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
 type agentParseResult struct {
 	finalOutput    string
 	assistantTurns int
+	streamErr      string // error the CLI reported inside the stream (result event with error subtype)
+	lastEvent      string // raw last stream line, fallback diagnostic when no structured error arrived
+}
+
+// diagnostic returns the best available explanation of a failed run. The CLI
+// reports API/auth/limit errors on stdout as stream-json (stderr stays empty
+// under --output-format stream-json), so a bare exit status is uninformative
+// without this.
+func (r *agentParseResult) diagnostic() string {
+	if r.streamErr != "" {
+		return r.streamErr
+	}
+	if r.lastEvent != "" {
+		return "last event: " + r.lastEvent
+	}
+	return "no stream output"
 }
 
 func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {
@@ -616,6 +655,9 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		line := scanner.Bytes()
 		_, _ = logFile.Write(line)
 		_, _ = logFile.Write([]byte{'\n'})
+		if len(bytes.TrimSpace(line)) > 0 {
+			result.lastEvent = truncate(string(line), 2000)
+		}
 
 		var ev map[string]any
 		if err := json.Unmarshal(line, &ev); err != nil {
@@ -630,17 +672,35 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 			}
 			if result.assistantTurns > maxTurns {
 				_ = proc.Kill()
-				return nil, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
+				return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
 			}
 		case "result":
 			if s, ok := ev["result"].(string); ok {
 				result.finalOutput = s
 			}
+			subtype, _ := ev["subtype"].(string)
+			isErr, _ := ev["is_error"].(bool)
+			if isErr || (subtype != "" && subtype != "success") {
+				msg := subtype
+				for _, key := range []string{"error", "result", "message"} {
+					if s, ok := ev[key].(string); ok && s != "" {
+						if msg != "" {
+							msg += ": "
+						}
+						msg += s
+						break
+					}
+				}
+				if msg == "" {
+					msg = "unspecified error in result event"
+				}
+				result.streamErr = truncate(msg, 2000)
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read stdout: %w", err)
+		return result, fmt.Errorf("read stdout: %w", err)
 	}
 	return result, nil
 }

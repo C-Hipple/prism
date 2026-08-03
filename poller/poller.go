@@ -267,6 +267,30 @@ func (p *Poller) loadBugMemory() {
 // Tests inject a stub to avoid actually invoking the claude CLI.
 func (p *Poller) SetAgentSpawner(s service.Spawner) { p.agentSpawner = s }
 
+// persistAgentFailureLog uploads a failed agent run's raw stream-json log to
+// GCS under agent-logs/. The local file lives on /tmp (= instance memory on
+// Cloud Run), so this is the only durable record of what the claude CLI
+// reported. Best-effort: a review failure must never be masked by an upload
+// failure.
+func (p *Poller) persistAgentFailureLog(logPath string) {
+	if p.gcsClient == nil {
+		return
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		log.Printf("[AGENT] WARN: read failure log %s: %v", logPath, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	objectName := "agent-logs/" + filepath.Base(logPath)
+	if err := p.gcsClient.UploadReviewSidecar(ctx, objectName, "application/x-ndjson", data); err != nil {
+		log.Printf("[AGENT] WARN: persist failure log to gs://%s/%s: %v", p.gcsClient.BucketName(), objectName, err)
+		return
+	}
+	log.Printf("[AGENT] persisted failure log: gs://%s/%s (%d bytes)", p.gcsClient.BucketName(), objectName, len(data))
+}
+
 // isReviewInFlight reports whether a PR's status indicates an in-progress
 // review (Gemini "generating" or Claude "agent_reviewing"). Used by the
 // outdated-detection paths to decide whether to cancel the active review.
@@ -321,6 +345,7 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		Effort:         p.cfg.AgentEffort,
 		BugMemory:      p.bugMemory,
 		RequiredChecks: p.cfg.RequiredChecks,
+		FailureLogSink: p.persistAgentFailureLog,
 	}
 	// Pass the PR's true base branch so the clone and the deterministic-layer
 	// diff (gates, bug memory, required checks) are computed against it. With
