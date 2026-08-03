@@ -224,6 +224,27 @@ func TestParseAgentStream_DiagnosticFallsBackToLastEvent(t *testing.T) {
 	}
 }
 
+// TestParseAgentStream_KillsOnScannerOverflow — a stream line over the 8MB
+// scanner cap must kill the subprocess; otherwise nothing drains its stdout
+// and proc.Wait() stalls until the wall-clock watcher fires.
+func TestParseAgentStream_KillsOnScannerOverflow(t *testing.T) {
+	huge := `{"type":"assistant","message":{"content":[{"type":"text","text":"` +
+		strings.Repeat("x", 9*1024*1024) + `"}]}}` + "\n"
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(huge),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	_, err := parseAgentStream(proc, &logBuf, 10)
+	if err == nil {
+		t.Fatal("expected scanner overflow error")
+	}
+	if !proc.killed {
+		t.Error("expected proc to be killed on scanner error")
+	}
+}
+
 // TestRunAgentReview_FailureSurfacesStreamErrorAndPersistsLog locks in the
 // two failure-path behaviors: the CLI's stdout-reported error appears in the
 // returned error (stderr is empty under stream-json, so exit status alone is
@@ -275,6 +296,92 @@ func TestRunAgentReview_FailureSurfacesStreamErrorAndPersistsLog(t *testing.T) {
 	if !bytes.Contains(sinkContent, []byte("error_during_execution")) {
 		t.Errorf("persisted log missing error event: %s", sinkContent)
 	}
+	assertLogsDirEmpty(t, cfg.LogsDir)
+}
+
+// assertLogsDirEmpty checks the local jsonl was cleaned up (it is removed
+// once persisted to the sink, or on success).
+func assertLogsDirEmpty(t *testing.T, logsDir string) {
+	t.Helper()
+	entries, err := os.ReadDir(logsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected log file to be removed, found %d file(s)", len(entries))
+	}
+}
+
+// TestRunAgentReview_ErrorResultEventWithZeroExit — the CLI can report an
+// error result event and still exit 0. That must fail the review (and hit
+// the sink), not publish the API error text as a successful SUMMARY.
+func TestRunAgentReview_ErrorResultEventWithZeroExit(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	stream := `{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}
+{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: overloaded"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+
+	var sinkCalls int
+	cfg := AgentConfig{
+		CloneRootDir:   cloneRoot,
+		LogsDir:        t.TempDir(),
+		WallClock:      time.Minute,
+		MaxTurns:       10,
+		FailureLogSink: func(string) { sinkCalls++ },
+	}
+
+	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err == nil {
+		t.Fatal("expected error: an error result event with exit 0 must not be a successful review")
+	}
+	if !strings.Contains(err.Error(), "overloaded") {
+		t.Errorf("error should carry the CLI's stream error, got: %v", err)
+	}
+	if sinkCalls != 1 {
+		t.Errorf("FailureLogSink calls: got %d want 1", sinkCalls)
+	}
+}
+
+// TestRunAgentReview_FailureWithoutSinkKeepsLog — with no sink configured
+// (local dev) the on-disk jsonl is the only record of a failed run and must
+// survive.
+func TestRunAgentReview_FailureWithoutSinkKeepsLog(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout:  bytes.NewBufferString(`{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}` + "\n"),
+		stderr:  &bytes.Buffer{},
+		waitErr: errors.New("exit status 1"),
+		killCh:  make(chan struct{}),
+	}}
+
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+	}
+
+	if _, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil); err == nil {
+		t.Fatal("expected error")
+	}
+	entries, err := os.ReadDir(cfg.LogsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected the failure log to be kept when no sink is configured, found %d file(s)", len(entries))
+	}
 }
 
 func TestRunAgentReview_SuccessDoesNotPersistLog(t *testing.T) {
@@ -307,6 +414,7 @@ func TestRunAgentReview_SuccessDoesNotPersistLog(t *testing.T) {
 	if sinkCalls != 0 {
 		t.Errorf("FailureLogSink must not fire on success, fired %d time(s)", sinkCalls)
 	}
+	assertLogsDirEmpty(t, cfg.LogsDir)
 }
 
 // TestCloneForAgent_LocalBare exercises the real clone path against a local

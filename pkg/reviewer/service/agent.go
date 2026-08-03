@@ -71,7 +71,7 @@ type AgentReview struct {
 
 	RawFinal string // the agent's final result text (pre-parse, for debugging)
 	CloneDir string // path to the per-invocation clone (kept for inspection)
-	LogPath  string // path to the raw stream-json file
+	LogPath  string // where the raw stream-json was written (removed by then — /tmp hygiene)
 }
 
 // Spawner abstracts subprocess creation so tests can stub the `claude` CLI.
@@ -237,6 +237,17 @@ func RunAgentReview(
 	}
 	defer logFile.Close()
 
+	// LogsDir sits on /tmp (= instance memory on Cloud Run), so the jsonl is
+	// kept only while it's the sole record of the run: removed on success, and
+	// on failure once FailureLogSink has persisted it. With no sink configured
+	// (local dev) failure logs stay on disk for inspection.
+	logRemovable := false
+	defer func() {
+		if logRemovable {
+			_ = os.Remove(logPath)
+		}
+	}()
+
 	// Drain stderr to a buffer so we can include it on failure. Safe to be
 	// unbounded for now — dev use, sensible claude outputs.
 	var stderrBuf strings.Builder
@@ -261,6 +272,7 @@ func RunAgentReview(
 		}
 		_ = logFile.Sync()
 		agentCfg.FailureLogSink(logPath)
+		logRemovable = true
 	}
 
 	if parseErr != nil {
@@ -279,6 +291,15 @@ func RunAgentReview(
 		persistFailureLog()
 		return nil, fmt.Errorf("agent: claude exited with error: %w (stream: %s) (stderr: %s)",
 			waitErr, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
+	}
+
+	// An error result event can arrive with a zero exit code; without this
+	// gate the error text would land in finalOutput, fail JSON parsing, and
+	// be published as a "successful" review whose SUMMARY is the API error.
+	if parseResult.streamErr != "" {
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (stderr: %s)",
+			truncate(parseResult.streamErr, 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	if parseResult.finalOutput == "" {
@@ -319,6 +340,7 @@ func RunAgentReview(
 	log.Printf("%s complete in %s (turns=%d, comments=%d)",
 		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments))
 
+	logRemovable = true
 	return &AgentReview{
 		Comments:      comments,
 		Gates:         gates,
@@ -700,6 +722,10 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 	}
 
 	if err := scanner.Err(); err != nil {
+		// Kill here too (like the max-turns path): the subprocess is still
+		// running with nothing draining its stdout, so leaving it alive stalls
+		// proc.Wait() until the wall-clock watcher fires.
+		_ = proc.Kill()
 		return result, fmt.Errorf("read stdout: %w", err)
 	}
 	return result, nil
