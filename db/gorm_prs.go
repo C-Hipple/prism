@@ -40,6 +40,7 @@ func prModelToPR(m *PRModel) *PR {
 		Draft:           m.Draft,
 		CIState:         m.CIState,
 		CIFailedChecks:  ciFailedChecks,
+		PRState:         m.PRState,
 		CriticalCount:   m.CriticalCount,
 		MediumCount:     m.MediumCount,
 		LowCount:        m.LowCount,
@@ -361,6 +362,14 @@ func (g *GormDB) GetAllPRs() ([]PR, error) {
 	}
 
 	return prs, nil
+}
+
+// SetPRState records the PR's GitHub state ("open", "closed", "merged").
+// Only meaningful for rows retained past close; open PRs stay at the default.
+func (g *GormDB) SetPRState(owner, repo string, prNumber int, state string) error {
+	return g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Update("pr_state", state).Error
 }
 
 // DeletePR removes a PR from the database

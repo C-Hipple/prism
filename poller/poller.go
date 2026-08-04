@@ -1099,12 +1099,25 @@ func (p *Poller) manualClaimPRIDs() (map[int]bool, bool) {
 // retainForManualClaim handles a closed PR kept alive by a manual claim:
 // non-claimants' views are soft-hidden so their dashboards behave as if the
 // row had been cleaned up (they get no pr_deleted broadcast; the row drops
-// out on their next fetch). Best-effort — the retained row is re-processed
-// every cycle, so a failed hide self-heals.
-func (p *Poller) retainForManualClaim(prID int, key string) {
+// out on their next fetch), and the PR's GitHub state is persisted so the
+// dashboard can render it as merged/closed. Best-effort — the retained row
+// is re-processed every cycle, so failed writes self-heal.
+func (p *Poller) retainForManualClaim(pr db.PR, state string) {
+	key := fmt.Sprintf("%s/%s#%d", pr.RepoOwner, pr.RepoName, pr.PRNumber)
 	log.Printf("[CLEANUP] PR %s is closed but manually requested — keeping until the requester deletes it", key)
-	if err := p.db.HideNonManualViewsForPR(prID); err != nil {
+	if err := p.db.HideNonManualViewsForPR(pr.ID); err != nil {
 		log.Printf("[CLEANUP] WARN: could not hide non-manual views for retained PR %s: %v", key, err)
+	}
+	if state = strings.ToLower(state); state != "" && state != pr.PRState {
+		if err := p.db.SetPRState(pr.RepoOwner, pr.RepoName, pr.PRNumber, state); err != nil {
+			log.Printf("[CLEANUP] WARN: could not persist state %q for retained PR %s: %v", state, key, err)
+		} else if p.EventFunc != nil {
+			p.EventFunc("pr_updated", map[string]interface{}{
+				"owner":  pr.RepoOwner,
+				"repo":   pr.RepoName,
+				"number": pr.PRNumber,
+			})
+		}
 	}
 }
 
@@ -1134,7 +1147,9 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 		}
 
 		if !isOpen && manualClaims[pr.ID] {
-			p.retainForManualClaim(pr.ID, fmt.Sprintf("%s/%s#%d", pr.RepoOwner, pr.RepoName, pr.PRNumber))
+			// IsPROpen can't distinguish merged from closed — leave the state
+			// to the batched cleanup path (cleanupAndDetectOutdated).
+			p.retainForManualClaim(pr, "")
 			continue
 		}
 
@@ -1212,7 +1227,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 		if state.State != "OPEN" {
 			if !claimsOK || manualClaims[pr.ID] {
 				if claimsOK {
-					p.retainForManualClaim(pr.ID, key)
+					p.retainForManualClaim(pr, state.State)
 				}
 				continue
 			}

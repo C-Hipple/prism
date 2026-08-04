@@ -272,6 +272,37 @@ func TestCleanupClosedPRs_KeepsManuallyRequestedClosedPRs(t *testing.T) {
 	}
 }
 
+func TestCleanupAndDetectOutdated_PersistsStateOfRetainedPR(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		Status: "completed", LastCommitSHA: "abc", PRState: "open",
+	}
+	mockDB.ManualClaimPRIDs = []int{11}
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"owner/repo/1": {Owner: "owner", Repo: "repo", Number: 1, State: "MERGED", HeadRefOid: "abc"},
+	}
+
+	poller := newTestPoller(mockGH, mockDB)
+
+	removed, _, err := poller.cleanupAndDetectOutdated(context.Background())
+	if err != nil {
+		t.Fatalf("cleanupAndDetectOutdated returned error: %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("expected 0 removed, got %d", removed)
+	}
+	pr, exists := mockDB.PRs["owner/repo/1"]
+	if !exists {
+		t.Fatal("manually claimed merged PR must be retained")
+	}
+	if pr.PRState != "merged" {
+		t.Errorf("expected retained PR state to be persisted as merged, got %q", pr.PRState)
+	}
+}
+
 func TestCleanupClosedPRs_KeepsOpenPRs(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	mockDB := NewMockDatabase()

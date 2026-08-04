@@ -91,6 +91,10 @@ type PRModel struct {
 	MyReviewStatus  string          `gorm:"size:20"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
 	CIState         string          `gorm:"size:20;default:unknown"`
 	CIFailedChecks  JSONStringArray `gorm:"type:text"`
+	// GitHub PR state: "open", "closed", or "merged". Only diverges from
+	// "open" on rows retained past close (manual claims) — everything else
+	// is deleted at close by cleanup.
+	PRState string `gorm:"column:pr_state;size:16;default:open"`
 	// Review importance counts (populated after review generation)
 	CriticalCount int `gorm:"default:0"`
 	MediumCount   int `gorm:"default:0"`

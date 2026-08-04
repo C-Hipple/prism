@@ -73,8 +73,10 @@ export function ReviewPRsSection({
   const { data: currentUser } = useCurrentUser();
   const { track } = useTelemetry();
   // Collapse state is deliberately client-side only (per issue #30); hidden
-  // membership itself is server-persisted per user.
+  // membership itself is server-persisted per user. Requested starts open
+  // (it's the section the user explicitly populated), Hidden starts closed.
   const [hiddenExpanded, setHiddenExpanded] = useState(false);
+  const [requestedExpanded, setRequestedExpanded] = useState(true);
 
   useEffect(() => {
     track('view_review_prs_page');
@@ -128,14 +130,26 @@ export function ReviewPRsSection({
       {hasRequestedPRs && (
         <section className="review-prs__requested-section">
           <div className="section-header">
-            <h2>Requested by Me ({requestedPRs.length})</h2>
+            <h2>
+              <button
+                type="button"
+                className="hidden-section__toggle"
+                aria-expanded={requestedExpanded}
+                onClick={() => setRequestedExpanded(v => !v)}
+              >
+                <span className="hidden-section__chevron" aria-hidden="true">
+                  {requestedExpanded ? '▾' : '▸'}
+                </span>
+                Requested by Me ({requestedPRs.length})
+              </button>
+            </h2>
           </div>
-          {requestedPRs.length === 0 && (
+          {requestedExpanded && requestedPRs.length === 0 && (
             <p className="review-prs__empty-state">
               No matching requested PRs
             </p>
           )}
-          {requestedPRs.length > 0 && (
+          {requestedExpanded && requestedPRs.length > 0 && (
             <PRTable prs={requestedPRs} showViaTeams={false} />
           )}
         </section>

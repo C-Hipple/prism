@@ -101,6 +101,7 @@ type PRResponse struct {
 	ApprovalCount   int      `json:"approval_count"`   // Number of current approvals
 	MyReviewStatus  string   `json:"my_review_status"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
 	Draft           bool     `json:"draft"`            // true if PR is in draft mode
+	PRState         string   `json:"pr_state"`         // GitHub PR state: "open", "closed", "merged"
 	CIState         string   `json:"ci_state"`         // "success", "failure", "pending", "unknown"
 	CIFailedChecks  []string `json:"ci_failed_checks"` // Names of failed checks
 	CreatedAt       *string  `json:"created_at"`       // PR creation timestamp from GitHub
@@ -397,6 +398,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			ApprovalCount:   dbPR.ApprovalCount,
 			MyReviewStatus:  prView.ReviewStatus, // Use user-specific review status
 			Draft:           dbPR.Draft,
+			PRState:         prStateOrOpen(dbPR.PRState),
 			CIState:         dbPR.CIState,
 			CIFailedChecks:  ciFailedChecks,
 			CreatedAt:       createdAt,
@@ -776,6 +778,15 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[API] generate-review: ingested + triggered %s/%s#%d (commit: %s, state: %s, merged: %t)",
 		req.Owner, req.Repo, req.Number, headSHA[:7], ghPR.GetState(), ghPR.GetMerged())
+
+	// Persist GitHub state so retained merged/closed PRs render as such.
+	prState := strings.ToLower(ghPR.GetState())
+	if ghPR.GetMerged() {
+		prState = "merged"
+	}
+	if err := s.db.SetPRState(req.Owner, req.Repo, req.Number, prState); err != nil {
+		log.Printf("[API] generate-review: SetPRState failed for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
+	}
 
 	// Claim the PR for the requester so it lands in their "Requested by Me"
 	// section, and stays there (closed-PR cleanup skips live manual claims)
@@ -1487,6 +1498,14 @@ func (s *Server) BroadcastEventToUser(userID int, eventType string, payload inte
 	}
 }
 
+// prStateOrOpen defaults a missing pr_state (rows predating the column) to "open".
+func prStateOrOpen(state string) string {
+	if state == "" {
+		return "open"
+	}
+	return state
+}
+
 // getPRResponse constructs a PR response using the default dev-mode user context.
 func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 	return s.getPRResponseForUser(s.getDevUserID(), owner, repo, number)
@@ -1600,6 +1619,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		ApprovalCount:   pr.ApprovalCount,
 		MyReviewStatus:  myReviewStatus,
 		Draft:           pr.Draft,
+		PRState:         prStateOrOpen(pr.PRState),
 		CIState:         pr.CIState,
 		CIFailedChecks:  ciFailedChecks,
 		CreatedAt:       createdAt,

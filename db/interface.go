@@ -29,6 +29,7 @@ type PR struct {
 	Draft           bool       // true if PR is in draft mode
 	CIState         string     // CI status: "success", "failure", "pending", "unknown"
 	CIFailedChecks  string     // JSON array of failed check names
+	PRState         string     // GitHub PR state: "open", "closed", "merged"
 	// Review importance counts
 	CriticalCount int // Number of CRITICAL importance comments
 	MediumCount   int // Number of MEDIUM importance comments
@@ -258,6 +259,7 @@ type Database interface {
 	EnsureManualPRView(userID, prID int, isAuthor bool) error
 	GetPRIDsWithManualClaims() (map[int]bool, error)
 	HideNonManualViewsForPR(prID int) error
+	SetPRState(owner, repo string, prNumber int, state string) error
 	MigrateLegacyNotes(userID int) (int, error)
 
 	// Leader election: only the lease holder runs the automatic poll cycle, so
