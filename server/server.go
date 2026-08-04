@@ -117,6 +117,8 @@ type PRResponse struct {
 	Notes string `json:"notes"`
 	// User moved this PR to the collapsed Hidden section
 	Hidden bool `json:"hidden"`
+	// User manually requested a review for this PR (Requested by Me section)
+	ViaManual bool `json:"via_manual"`
 	// Populated when Status=="error".
 	ErrorMessage string `json:"error_message,omitempty"`
 }
@@ -406,6 +408,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			ReviewVerdict:   dbPR.ReviewVerdict,
 			Notes:           notes,
 			Hidden:          prView.UserHidden,
+			ViaManual:       prView.ViaManual,
 			ErrorMessage:    dbPR.ErrorMessage,
 		})
 	}
@@ -773,6 +776,29 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[API] generate-review: ingested + triggered %s/%s#%d (commit: %s, state: %s, merged: %t)",
 		req.Owner, req.Repo, req.Number, headSHA[:7], ghPR.GetState(), ghPR.GetMerged())
+
+	// Claim the PR for the requester so it lands in their "Requested by Me"
+	// section, and stays there (closed-PR cleanup skips live manual claims)
+	// until they delete it.
+	if user := auth.GetCurrentUser(r); user != nil {
+		if dbPR, err := s.db.GetPR(req.Owner, req.Repo, req.Number); err == nil && dbPR != nil {
+			isAuthor := strings.EqualFold(author, user.GitHubUsername)
+			if err := s.db.EnsureManualPRView(user.ID, dbPR.ID, isAuthor); err != nil {
+				log.Printf("[API] generate-review: EnsureManualPRView failed for user %d on %s/%s#%d: %v",
+					user.ID, req.Owner, req.Repo, req.Number, err)
+			} else {
+				// pr_created payloads are re-resolved per client, so the
+				// requester's clients insert the row with their view data.
+				s.BroadcastEventToUser(user.ID, EventPRCreated, map[string]interface{}{
+					"owner":  req.Owner,
+					"repo":   req.Repo,
+					"number": req.Number,
+				})
+			}
+		} else if err != nil {
+			log.Printf("[API] generate-review: GetPR after upsert failed for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
+		}
+	}
 
 	// Notify all clients so the dashboard reflects the new PR/status.
 	s.BroadcastEvent(EventPRUpdated, map[string]interface{}{
@@ -1537,6 +1563,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 	}
 	isMine := strings.EqualFold(author, s.cfg.GitHubUsername)
 	hidden := false
+	viaManual := false
 
 	if userID > 0 {
 		if assignment, err := s.db.GetUserPRAssignment(userID, pr.ID); err == nil && assignment != nil {
@@ -1549,6 +1576,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 			}
 			isMine = assignment.IsAuthor
 			hidden = assignment.UserHidden
+			viaManual = assignment.ViaManual
 		}
 	}
 
@@ -1583,6 +1611,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		ReviewVerdict:   pr.ReviewVerdict,
 		Notes:           notes,
 		Hidden:          hidden,
+		ViaManual:       viaManual,
 		ErrorMessage:    pr.ErrorMessage,
 	}
 }

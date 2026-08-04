@@ -88,16 +88,19 @@ export function ReviewPRsSection({
     username: currentUser?.github_username,
   };
 
-  // Split PRs into "My PRs" and "PRs to Review"; user-hidden rows leave both
-  // and collect in the Hidden section at the bottom instead.
+  // Each PR lands in exactly one section: hidden > via_manual > is_mine >
+  // review. User-hidden rows leave the top three and collect in the Hidden
+  // section at the bottom instead.
   const allPRs = prs || [];
   const visiblePRs = allPRs.filter(pr => !pr.hidden);
   const hasHiddenPRs = allPRs.length > visiblePRs.length;
   const hiddenPRs = filterAndSortPRs(allPRs.filter(pr => pr.hidden), filterOpts);
-  const myPRs = filterAndSortPRs(visiblePRs.filter(pr => pr.is_mine), filterOpts);
+  const requestedPRs = filterAndSortPRs(visiblePRs.filter(pr => pr.via_manual), filterOpts);
+  const hasRequestedPRs = visiblePRs.some(pr => pr.via_manual);
+  const myPRs = filterAndSortPRs(visiblePRs.filter(pr => !pr.via_manual && pr.is_mine), filterOpts);
 
   // Apply triage filter to review PRs
-  let reviewPRs = filterAndSortPRs(visiblePRs.filter(pr => !pr.is_mine), filterOpts);
+  let reviewPRs = filterAndSortPRs(visiblePRs.filter(pr => !pr.via_manual && !pr.is_mine), filterOpts);
   if (triageFilter) {
     reviewPRs = reviewPRs.filter(pr => {
       // Only filter completed PRs by triage category
@@ -117,6 +120,22 @@ export function ReviewPRsSection({
             We&apos;re loading your team assignments and PR data. This usually takes a minute or two on first login.
           </p>
         </div>
+      )}
+
+      {/* Requested by Me Section — PRs the user manually requested a review
+          for (paste-a-URL form / API). Rendered only when non-empty; deleting
+          an entry removes it and the section disappears with its last row. */}
+      {hasRequestedPRs && (
+        <section className="review-prs__requested-section">
+          <div className="section-header">
+            <h2>Requested by Me ({requestedPRs.length})</h2>
+          </div>
+          {isLoading && <LoadingSpinner />}
+          {error && <ErrorMessage message={`Error loading PRs: ${error.message}`} />}
+          {!isLoading && !error && requestedPRs.length > 0 && (
+            <PRTable prs={requestedPRs} showViaTeams={false} />
+          )}
+        </section>
       )}
 
       {/* My PRs Section */}

@@ -231,6 +231,44 @@ func TestCleanupClosedPRs_RemovesClosedPRs(t *testing.T) {
 	}
 }
 
+func TestCleanupClosedPRs_KeepsManuallyRequestedClosedPRs(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+
+	// Both PRs are closed; PR 1 has a live manual claim, PR 2 does not.
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "owner", RepoName: "repo", PRNumber: 1, Status: "completed",
+	}
+	mockDB.PRs["owner/repo/2"] = &db.PR{
+		ID: 22, RepoOwner: "owner", RepoName: "repo", PRNumber: 2, Status: "completed",
+	}
+	mockDB.ManualClaimPRIDs = []int{11}
+	mockGH.IsPROpenResults["owner/repo/1"] = struct {
+		IsOpen bool
+		Err    error
+	}{false, nil}
+	mockGH.IsPROpenResults["owner/repo/2"] = struct {
+		IsOpen bool
+		Err    error
+	}{false, nil}
+
+	poller := newTestPoller(mockGH, mockDB)
+
+	removed, err := poller.cleanupClosedPRs(context.Background())
+	if err != nil {
+		t.Fatalf("cleanupClosedPRs returned error: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("expected 1 PR removed, got %d", removed)
+	}
+	if _, exists := mockDB.PRs["owner/repo/1"]; !exists {
+		t.Error("PR 1 should be kept: closed but manually requested")
+	}
+	if _, exists := mockDB.PRs["owner/repo/2"]; exists {
+		t.Error("PR 2 should have been deleted (closed, no manual claim)")
+	}
+}
+
 func TestCleanupClosedPRs_KeepsOpenPRs(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	mockDB := NewMockDatabase()

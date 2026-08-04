@@ -1083,12 +1083,30 @@ func (p *Poller) startPoll(ctx context.Context, trigger string) {
 	}()
 }
 
+// manualClaimPRIDs returns the set of PR ids exempt from closed-PR cleanup
+// because a user manually requested them and hasn't deleted them. ok=false
+// means the claims are unknown (DB error) — callers must skip deletion for
+// the cycle rather than delete a row a user asked to keep.
+func (p *Poller) manualClaimPRIDs() (map[int]bool, bool) {
+	claims, err := p.db.GetPRIDsWithManualClaims()
+	if err != nil {
+		log.Printf("[CLEANUP] ERROR: could not load manual claims, skipping closed-PR cleanup this cycle: %v", err)
+		return nil, false
+	}
+	return claims, true
+}
+
 // cleanupClosedPRs removes PRs from the database and filesystem if they're closed on GitHub
 func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 	// Get all PRs from database
 	allPRs, err := p.db.GetAllPRs()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get PRs from database: %w", err)
+	}
+
+	manualClaims, claimsOK := p.manualClaimPRIDs()
+	if !claimsOK {
+		return 0, nil
 	}
 
 	removed := 0
@@ -1100,6 +1118,12 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 			// Log but continue - we'll handle it on next poll
 			log.Printf("[CLEANUP] Warning: Could not check status of PR %s/%s#%d: %v",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+			continue
+		}
+
+		if !isOpen && manualClaims[pr.ID] {
+			log.Printf("[CLEANUP] PR %s/%s#%d is closed but manually requested — keeping until the requester deletes it",
+				pr.RepoOwner, pr.RepoName, pr.PRNumber)
 			continue
 		}
 
@@ -1162,6 +1186,8 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 		return 0, 0, fmt.Errorf("failed to batch-fetch PR state: %w", err)
 	}
 
+	manualClaims, claimsOK := p.manualClaimPRIDs()
+
 	// Single pass: handle closed PRs and outdated reviews
 	for _, pr := range allPRs {
 		key := fmt.Sprintf("%s/%s/%d", pr.RepoOwner, pr.RepoName, pr.PRNumber)
@@ -1173,6 +1199,12 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 
 		// --- Closed PR cleanup ---
 		if state.State != "OPEN" {
+			if !claimsOK || manualClaims[pr.ID] {
+				if claimsOK {
+					log.Printf("[CLEANUP] PR %s is %s but manually requested — keeping until the requester deletes it", key, state.State)
+				}
+				continue
+			}
 			log.Printf("[CLEANUP] PR %s is %s, removing from tracking (reviews kept in GCS)", key, state.State)
 			if err := p.db.DeletePR(pr.RepoOwner, pr.RepoName, pr.PRNumber); err != nil {
 				log.Printf("[CLEANUP] ERROR: Failed to delete PR %s: %v", key, err)

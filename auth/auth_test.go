@@ -172,6 +172,8 @@ func (m *MockDatabase) DeleteAllUserPRViews(userID int) (int64, error)          
 func (m *MockDatabase) HidePRForUser(userID, prID int) error                         { return nil }
 func (m *MockDatabase) SetUserHiddenForPR(userID, prID int, hidden bool) error       { return nil }
 func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error       { return nil }
+func (m *MockDatabase) EnsureManualPRView(userID, prID int, isAuthor bool) error     { return nil }
+func (m *MockDatabase) GetPRIDsWithManualClaims() (map[int]bool, error)              { return nil, nil }
 func (m *MockDatabase) BatchUpsertPRs(prs []*db.PR) error                            { return nil }
 func (m *MockDatabase) BatchUpsertUserPRViews(views []db.UserPRViewBatchItem) error  { return nil }
 func (m *MockDatabase) GetUserPRViewsWithViaTeams(prIDs []int) ([]db.UserPRView, error) {

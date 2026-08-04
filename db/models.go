@@ -135,6 +135,11 @@ type UserPRViewModel struct {
 	// every upsert; UserHidden is only ever written by the user and must
 	// never appear in a poller DoUpdates set.
 	UserHidden bool `gorm:"column:user_hidden;default:false"`
+	// The user requested a review for this PR by hand (generate-review).
+	// Same write discipline as UserHidden: only the generate-review handler
+	// writes it, never any poller DoUpdates or prune set. While true (and
+	// not Hidden) it also exempts a closed PR from cleanup deletion.
+	ViaManual bool `gorm:"column:via_manual;default:false"`
 }
 
 // TableName specifies the table name for UserPRViewModel
