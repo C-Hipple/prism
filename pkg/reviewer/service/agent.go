@@ -70,6 +70,14 @@ type AgentReview struct {
 	RawFinal string // the agent's final result text (pre-parse, for debugging)
 	CloneDir string // path to the per-invocation clone (kept for inspection)
 	LogPath  string // where the raw stream-json was written (removed by then — /tmp hygiene)
+
+	// Model verification: the CLI reports the serving model in the stream
+	// (init + assistant events). ModelFallback means it did not satisfy the
+	// requested model — the review still publishes, but callers must surface
+	// it loudly (log, telemetry, dashboard badge).
+	RequestedModel string
+	ServedModel    string
+	ModelFallback  bool
 }
 
 // Spawner abstracts subprocess creation so tests can stub the `claude` CLI.
@@ -330,19 +338,28 @@ func RunAgentReview(
 			logPrefix, checkTel.ChecksIssued, checkTel.ChecksAnswered, checkTel.ChecksViolated,
 			checkTel.ChecksEvidenceOK, len(checkFindings))
 	}
-	log.Printf("%s complete in %s (turns=%d, comments=%d)",
-		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments))
+	modelFallback := parseResult.servedModel != "" && !modelMatches(model, parseResult.servedModel)
+	if modelFallback {
+		log.Printf("%s WARNING: MODEL FALLBACK: requested=%s served=%s — review ran on the wrong model",
+			logPrefix, model, parseResult.servedModel)
+	}
+
+	log.Printf("%s complete in %s (turns=%d, comments=%d, model=%s)",
+		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments), parseResult.servedModel)
 
 	logRemovable = true
 	return &AgentReview{
-		Comments:      comments,
-		Gates:         gates,
-		BugMemory:     memMatch,
-		Checks:        checkTel,
-		CheckFindings: checkFindings,
-		RawFinal:      parseResult.finalOutput,
-		CloneDir:      cloneDir,
-		LogPath:       logPath,
+		Comments:       comments,
+		Gates:          gates,
+		BugMemory:      memMatch,
+		Checks:         checkTel,
+		CheckFindings:  checkFindings,
+		RawFinal:       parseResult.finalOutput,
+		CloneDir:       cloneDir,
+		LogPath:        logPath,
+		RequestedModel: model,
+		ServedModel:    parseResult.servedModel,
+		ModelFallback:  modelFallback,
 	}, nil
 }
 
@@ -645,6 +662,7 @@ type agentParseResult struct {
 	assistantTurns int
 	streamErr      string // error the CLI reported inside the stream (result event with error subtype)
 	lastEvent      string // raw last stream line, fallback diagnostic when no structured error arrived
+	servedModel    string // model the CLI actually ran (init/assistant events), "" if never reported
 }
 
 // diagnostic returns the best available explanation of a failed run — under
@@ -658,6 +676,28 @@ func (r *agentParseResult) diagnostic() string {
 		return "last event: " + r.lastEvent
 	}
 	return "no stream output"
+}
+
+// noteServedModel records the first real model the stream reports. Error
+// events carry the placeholder "<synthetic>" model — never a serving model.
+func (r *agentParseResult) noteServedModel(v any) {
+	if r.servedModel != "" {
+		return
+	}
+	if s, ok := v.(string); ok && s != "" && !strings.HasPrefix(s, "<") {
+		r.servedModel = s
+	}
+}
+
+// modelMatches reports whether the served model satisfies the requested one.
+// Tolerates alias vs full id in either direction ("opus" vs "claude-opus-4-8",
+// "claude-fable-5" vs a dated "claude-fable-5-20260115").
+func modelMatches(requested, served string) bool {
+	requested = strings.ToLower(requested)
+	served = strings.ToLower(served)
+	return requested == served ||
+		strings.HasPrefix(served, requested) ||
+		strings.Contains(served, requested)
 }
 
 func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {
@@ -679,7 +719,14 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		}
 
 		switch ev["type"] {
+		case "system":
+			if ev["subtype"] == "init" {
+				result.noteServedModel(ev["model"])
+			}
 		case "assistant":
+			if msg, ok := ev["message"].(map[string]any); ok {
+				result.noteServedModel(msg["model"])
+			}
 			result.assistantTurns++
 			if result.assistantTurns%5 == 0 || result.assistantTurns == 1 {
 				log.Printf("[AGENT] assistant turn %d/%d", result.assistantTurns, maxTurns)

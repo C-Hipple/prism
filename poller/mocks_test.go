@@ -274,6 +274,7 @@ type MockDatabase struct {
 	}
 
 	ManualClaimPRIDs        []int
+	TelemetryEvents         []db.TelemetryEvent
 	HideNonManualViewsCalls []int
 	EnsureUserPRViewCalls   []struct {
 		UserID   int
@@ -433,7 +434,7 @@ func (m *MockDatabase) SetPRError(owner, repo string, prNumber int, message stri
 	return nil
 }
 
-func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string) error {
+func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := prDBKey(owner, repo, prNumber)
@@ -447,6 +448,7 @@ func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitS
 		pr.MediumCount = medium
 		pr.LowCount = low
 		pr.ReviewVerdict = verdict
+		pr.ModelFallback = modelFallback
 		pr.ErrorMessage = ""
 	}
 	return nil
@@ -583,6 +585,13 @@ func (m *MockDatabase) GetUserByID(id int) (*db.User, error) {
 }
 
 func (m *MockDatabase) GetUserByUsername(username string) (*db.User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for i := range m.Users {
+		if m.Users[i].GitHubUsername == username {
+			return &m.Users[i], nil
+		}
+	}
 	return nil, nil
 }
 
@@ -594,6 +603,10 @@ func (m *MockDatabase) GetAllUsers() ([]db.User, error) {
 }
 
 func (m *MockDatabase) CreateUser(user *db.User) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	user.ID = len(m.Users) + 1
+	m.Users = append(m.Users, *user)
 	return nil
 }
 
@@ -825,6 +838,9 @@ func (m *MockDatabase) MigrateLegacyNotes(userID int) (int, error) {
 }
 
 func (m *MockDatabase) CreateTelemetryEvents(events []db.TelemetryEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.TelemetryEvents = append(m.TelemetryEvents, events...)
 	return nil
 }
 

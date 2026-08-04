@@ -289,6 +289,39 @@ func (p *Poller) persistAgentFailureLog(logPath string) {
 	log.Printf("[AGENT] persisted failure log: gs://%s/%s (%d bytes)", p.gcsClient.BucketName(), objectName, len(data))
 }
 
+// systemTelemetryUser is the reserved user that owns server-emitted
+// telemetry events (telemetry_events.user_id is NOT NULL with an FK).
+const systemTelemetryUser = "prism-system"
+
+// recordModelFallback writes an agent_model_fallback telemetry event so
+// fallback frequency is queryable from the telemetry dashboard alongside
+// user events. Events are attributed to a reserved "prism-system" user
+// (telemetry_events.user_id is NOT NULL with an FK). Best-effort.
+func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served string) {
+	user, err := p.db.GetUserByUsername(systemTelemetryUser)
+	if err == nil && user == nil {
+		user = &db.User{GitHubID: -1, GitHubUsername: systemTelemetryUser}
+		if err = p.db.CreateUser(user); err != nil {
+			user = nil
+		}
+	}
+	if err != nil || user == nil {
+		log.Printf("[REVIEWER] WARN: could not resolve %s user for fallback telemetry: %v", systemTelemetryUser, err)
+		return
+	}
+	event := db.TelemetryEvent{
+		UserID:   user.ID,
+		Action:   "agent_model_fallback",
+		Label:    fmt.Sprintf("requested=%s served=%s", requested, served),
+		PROwner:  pr.Owner,
+		PRRepo:   pr.Repo,
+		PRNumber: pr.Number,
+	}
+	if err := p.db.CreateTelemetryEvents([]db.TelemetryEvent{event}); err != nil {
+		log.Printf("[REVIEWER] WARN: could not record fallback telemetry: %v", err)
+	}
+}
+
 // isReviewInFlight reports whether a PR's status indicates an in-progress
 // review (Gemini "generating" or Claude "agent_reviewing"). Used by the
 // outdated-detection paths to decide whether to cancel the active review.
@@ -355,6 +388,12 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 	if agentErr != nil {
 		log.Printf("[REVIEWER] ERROR: agent review failed for PR %d: %v", pr.Number, agentErr)
 		return nil, fmt.Errorf("agent review: %w", agentErr)
+	}
+
+	if agentOut.ModelFallback {
+		log.Printf("[REVIEWER] ERROR: MODEL FALLBACK for %s/%s#%d: requested=%s served=%s — review published with fallback badge",
+			pr.Owner, pr.Repo, pr.Number, agentOut.RequestedModel, agentOut.ServedModel)
+		p.recordModelFallback(pr, agentOut.RequestedModel, agentOut.ServedModel)
 	}
 
 	// Reconcile instead of replace: the agent's output used to fully overwrite
@@ -427,6 +466,7 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		FileContents:  result.FileContents,
 		BugMemory:     agentOut.BugMemory,
 		Checks:        agentOut.Checks,
+		ModelFallback: agentOut.ModelFallback,
 		// Copied (not aliased) so the no-swallow check reads the pre-merge
 		// alert set even if a later stage mutates the agent output.
 		GateAlerts: append(append([]types.LineComment{}, agentOut.Gates...), agentOut.CheckFindings...),
@@ -2516,14 +2556,15 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				filename := gcs.ReviewFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 				// Get existing importance counts + verdict from database
 				existingPR, _ := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-				criticalCount, mediumCount, lowCount, verdict := 0, 0, 0, ""
+				criticalCount, mediumCount, lowCount, verdict, modelFallback := 0, 0, 0, "", false
 				if existingPR != nil {
 					criticalCount = existingPR.CriticalCount
 					mediumCount = existingPR.MediumCount
 					lowCount = existingPR.LowCount
 					verdict = existingPR.ReviewVerdict
+					modelFallback = existingPR.ModelFallback
 				}
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict); err != nil {
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
 				} else {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
@@ -2666,7 +2707,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				// (unknown) when the mock generator supplies no comments or
 				// the SUMMARY has no recognizable verdict phrasing.
 				verdict := service.VerdictFromComments(reviewResult.Comments)
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict); err != nil {
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, reviewResult.ModelFallback); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
 				} else {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)

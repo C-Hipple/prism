@@ -303,6 +303,36 @@ func TestCleanupAndDetectOutdated_PersistsStateOfRetainedPR(t *testing.T) {
 	}
 }
 
+func TestRecordModelFallback_CreatesSystemUserAndEvent(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	poller := newTestPoller(mockGH, mockDB)
+
+	pr := github.PullRequest{Owner: "owner", Repo: "repo", Number: 7}
+	poller.recordModelFallback(pr, "claude-fable-5", "claude-opus-4-8")
+	poller.recordModelFallback(pr, "claude-fable-5", "claude-opus-4-8")
+
+	if len(mockDB.TelemetryEvents) != 2 {
+		t.Fatalf("expected 2 telemetry events, got %d", len(mockDB.TelemetryEvents))
+	}
+	ev := mockDB.TelemetryEvents[0]
+	if ev.Action != "agent_model_fallback" {
+		t.Errorf("action: got %q", ev.Action)
+	}
+	if ev.Label != "requested=claude-fable-5 served=claude-opus-4-8" {
+		t.Errorf("label: got %q", ev.Label)
+	}
+	if ev.PROwner != "owner" || ev.PRRepo != "repo" || ev.PRNumber != 7 {
+		t.Errorf("PR attribution: %+v", ev)
+	}
+	if ev.UserID == 0 {
+		t.Error("event must be attributed to the system user, not user 0")
+	}
+	if len(mockDB.Users) != 1 {
+		t.Errorf("system user should be created once and reused, got %d users", len(mockDB.Users))
+	}
+}
+
 func TestCleanupAndDetectOutdated_RestoresStateOfReopenedPR(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	mockDB := NewMockDatabase()
