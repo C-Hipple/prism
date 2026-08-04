@@ -303,6 +303,28 @@ func TestCleanupAndDetectOutdated_PersistsStateOfRetainedPR(t *testing.T) {
 	}
 }
 
+func TestCleanupAndDetectOutdated_RestoresStateOfReopenedPR(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		Status: "completed", LastCommitSHA: "abc", PRState: "closed",
+	}
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"owner/repo/1": {Owner: "owner", Repo: "repo", Number: 1, State: "OPEN", HeadRefOid: "abc"},
+	}
+
+	poller := newTestPoller(mockGH, mockDB)
+
+	if _, _, err := poller.cleanupAndDetectOutdated(context.Background()); err != nil {
+		t.Fatalf("cleanupAndDetectOutdated returned error: %v", err)
+	}
+	if got := mockDB.PRs["owner/repo/1"].PRState; got != "open" {
+		t.Errorf("expected re-opened PR state restored to open, got %q", got)
+	}
+}
+
 func TestCleanupClosedPRs_KeepsOpenPRs(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	mockDB := NewMockDatabase()

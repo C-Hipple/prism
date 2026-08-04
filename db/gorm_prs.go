@@ -80,6 +80,7 @@ func prToPRModel(p *PR) *PRModel {
 		MyReviewStatus:  p.MyReviewStatus,
 		CIState:         p.CIState,
 		CIFailedChecks:  ciFailedChecks,
+		PRState:         p.PRState,
 		CriticalCount:   p.CriticalCount,
 		MediumCount:     p.MediumCount,
 		LowCount:        p.LowCount,

@@ -1111,12 +1111,8 @@ func (p *Poller) retainForManualClaim(pr db.PR, state string) {
 	if state = strings.ToLower(state); state != "" && state != pr.PRState {
 		if err := p.db.SetPRState(pr.RepoOwner, pr.RepoName, pr.PRNumber, state); err != nil {
 			log.Printf("[CLEANUP] WARN: could not persist state %q for retained PR %s: %v", state, key, err)
-		} else if p.EventFunc != nil {
-			p.EventFunc("pr_updated", map[string]interface{}{
-				"owner":  pr.RepoOwner,
-				"repo":   pr.RepoName,
-				"number": pr.PRNumber,
-			})
+		} else {
+			p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
 		}
 	}
 }
@@ -1246,6 +1242,19 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			log.Printf("[CLEANUP] Successfully removed closed PR %s", key)
 			removed++
 			continue
+		}
+
+		// --- PR-state sync (re-opened retained PRs) ---
+		// A PR retained past close (manual claim) had pr_state persisted as
+		// closed/merged; if it's re-opened on GitHub, restore it or the UI
+		// keeps showing the merged/closed dot instead of live CI.
+		if pr.PRState != "" && pr.PRState != "open" {
+			log.Printf("[STATE-SYNC] PR %s re-opened on GitHub, restoring pr_state to open", key)
+			if err := p.db.SetPRState(pr.RepoOwner, pr.RepoName, pr.PRNumber, "open"); err != nil {
+				log.Printf("[STATE-SYNC] ERROR: failed to restore state for PR %s: %v", key, err)
+			} else {
+				p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			}
 		}
 
 		// --- Draft-state sync ---
