@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -46,6 +47,11 @@ type AgentConfig struct {
 	// deterministically post-parse (see checks.go). Off by default; when off
 	// the prompt and outputs are byte-identical to a checkless run.
 	RequiredChecks bool
+
+	// FailureLogSink, when non-nil, is called synchronously with the raw
+	// stream-json log path after a failed run, before the error returns —
+	// LogsDir is ephemeral, so this is the log's only path off the instance.
+	FailureLogSink func(logPath string)
 }
 
 // AgentReview is the result of a successful agent run.
@@ -63,7 +69,7 @@ type AgentReview struct {
 
 	RawFinal string // the agent's final result text (pre-parse, for debugging)
 	CloneDir string // path to the per-invocation clone (kept for inspection)
-	LogPath  string // path to the raw stream-json file
+	LogPath  string // where the raw stream-json was written (removed by then — /tmp hygiene)
 }
 
 // Spawner abstracts subprocess creation so tests can stub the `claude` CLI.
@@ -229,6 +235,15 @@ func RunAgentReview(
 	}
 	defer logFile.Close()
 
+	// LogsDir is /tmp (= instance memory on Cloud Run): remove the jsonl once
+	// it isn't the sole record of the run. No sink (local dev) = keep on failure.
+	logRemovable := false
+	defer func() {
+		if logRemovable {
+			_ = os.Remove(logPath)
+		}
+	}()
+
 	// Drain stderr to a buffer so we can include it on failure. Safe to be
 	// unbounded for now — dev use, sensible claude outputs.
 	var stderrBuf strings.Builder
@@ -245,24 +260,46 @@ func RunAgentReview(
 	waitErr := proc.Wait()
 	stderrWG.Wait()
 
+	persistFailureLog := func() {
+		if agentCfg.FailureLogSink == nil {
+			return
+		}
+		_ = logFile.Sync()
+		agentCfg.FailureLogSink(logPath)
+		logRemovable = true
+	}
+
 	if parseErr != nil {
 		// Turn-cap hit or parse error — subprocess already killed inside parser.
+		persistFailureLog()
 		return nil, fmt.Errorf("agent: %w (stderr: %s)", parseErr, truncate(stderrBuf.String(), 1000))
 	}
 
 	if runCtx.Err() == context.DeadlineExceeded {
+		persistFailureLog()
 		return nil, fmt.Errorf("agent: wall-clock timeout (%s) after %d turns (stderr: %s)",
 			agentCfg.WallClock, parseResult.assistantTurns, truncate(stderrBuf.String(), 1000))
 	}
 
 	if waitErr != nil {
-		return nil, fmt.Errorf("agent: claude exited with error: %w (stderr: %s)",
-			waitErr, truncate(stderrBuf.String(), 1000))
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: claude exited with error: %w (stream: %s) (stderr: %s)",
+			waitErr, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
+	}
+
+	// The CLI can exit 0 after an error result event; ungated, the error text
+	// would publish as a "successful" SUMMARY review.
+	if parseResult.streamErr != "" {
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (stderr: %s)",
+			truncate(parseResult.streamErr, 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	if parseResult.finalOutput == "" {
 		log.Printf("%s claude finished with no final result after %d turn(s)", logPrefix, parseResult.assistantTurns)
-		return nil, fmt.Errorf("agent: no final result emitted (stderr: %s)", truncate(stderrBuf.String(), 1000))
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: no final result emitted after %d turn(s) (stream: %s) (stderr: %s)",
+			parseResult.assistantTurns, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	comments, parseErr := parseAgentJSON(parseResult.finalOutput)
@@ -296,6 +333,7 @@ func RunAgentReview(
 	log.Printf("%s complete in %s (turns=%d, comments=%d)",
 		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments))
 
+	logRemovable = true
 	return &AgentReview{
 		Comments:      comments,
 		Gates:         gates,
@@ -605,6 +643,21 @@ func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
 type agentParseResult struct {
 	finalOutput    string
 	assistantTurns int
+	streamErr      string // error the CLI reported inside the stream (result event with error subtype)
+	lastEvent      string // raw last stream line, fallback diagnostic when no structured error arrived
+}
+
+// diagnostic returns the best available explanation of a failed run — under
+// stream-json the CLI reports errors on stdout and stderr stays empty, so a
+// bare exit status is uninformative.
+func (r *agentParseResult) diagnostic() string {
+	if r.streamErr != "" {
+		return r.streamErr
+	}
+	if r.lastEvent != "" {
+		return "last event: " + r.lastEvent
+	}
+	return "no stream output"
 }
 
 func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {
@@ -616,6 +669,9 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		line := scanner.Bytes()
 		_, _ = logFile.Write(line)
 		_, _ = logFile.Write([]byte{'\n'})
+		if len(bytes.TrimSpace(line)) > 0 {
+			result.lastEvent = truncate(string(line), 2000)
+		}
 
 		var ev map[string]any
 		if err := json.Unmarshal(line, &ev); err != nil {
@@ -630,17 +686,38 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 			}
 			if result.assistantTurns > maxTurns {
 				_ = proc.Kill()
-				return nil, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
+				return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
 			}
 		case "result":
 			if s, ok := ev["result"].(string); ok {
 				result.finalOutput = s
 			}
+			subtype, _ := ev["subtype"].(string)
+			isErr, _ := ev["is_error"].(bool)
+			if isErr || (subtype != "" && subtype != "success") {
+				msg := subtype
+				for _, key := range []string{"error", "result", "message"} {
+					if s, ok := ev[key].(string); ok && s != "" {
+						if msg != "" {
+							msg += ": "
+						}
+						msg += s
+						break
+					}
+				}
+				if msg == "" {
+					msg = "unspecified error in result event"
+				}
+				result.streamErr = truncate(msg, 2000)
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read stdout: %w", err)
+		// Nothing drains stdout after this return; unkilled, proc.Wait()
+		// stalls until the wall-clock watcher fires.
+		_ = proc.Kill()
+		return result, fmt.Errorf("read stdout: %w", err)
 	}
 	return result, nil
 }
