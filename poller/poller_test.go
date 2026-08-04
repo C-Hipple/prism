@@ -267,6 +267,9 @@ func TestCleanupClosedPRs_KeepsManuallyRequestedClosedPRs(t *testing.T) {
 	if _, exists := mockDB.PRs["owner/repo/2"]; exists {
 		t.Error("PR 2 should have been deleted (closed, no manual claim)")
 	}
+	if len(mockDB.HideNonManualViewsCalls) != 1 || mockDB.HideNonManualViewsCalls[0] != 11 {
+		t.Errorf("expected non-manual views of retained PR 11 to be hidden, calls: %v", mockDB.HideNonManualViewsCalls)
+	}
 }
 
 func TestCleanupClosedPRs_KeepsOpenPRs(t *testing.T) {

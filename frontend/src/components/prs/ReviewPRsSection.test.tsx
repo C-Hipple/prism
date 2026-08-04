@@ -295,6 +295,22 @@ describe('ReviewPRsSection', () => {
     expect(tables[2].textContent).toBe('Review PR');
   });
 
+  it('shows an empty state when filters exclude all requested PRs', () => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    usePRsMock.mockReturnValue({
+      data: [
+        makePR({ number: 91, title: 'Requested chat PR', via_manual: true }),
+        makePR({ number: 92, title: 'Billing review PR' }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+
+    const { getByText } = render(<ReviewPRsSection searchTerm="billing" />);
+    expect(getByText('Requested by Me (0)')).toBeTruthy();
+    expect(getByText('No matching requested PRs')).toBeTruthy();
+  });
+
   it('moves a hidden manually requested PR to the Hidden section, not Requested by Me', () => {
     useTelemetryMock.mockReturnValue({ track: vi.fn() });
     usePRsMock.mockReturnValue({

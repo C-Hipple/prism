@@ -257,6 +257,7 @@ type Database interface {
 	EnsureUserPRView(userID, prID int, isAuthor bool) error
 	EnsureManualPRView(userID, prID int, isAuthor bool) error
 	GetPRIDsWithManualClaims() (map[int]bool, error)
+	HideNonManualViewsForPR(prID int) error
 	MigrateLegacyNotes(userID int) (int, error)
 
 	// Leader election: only the lease holder runs the automatic poll cycle, so

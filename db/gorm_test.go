@@ -1331,6 +1331,41 @@ func TestGormDB_EnsureManualPRView_CreatesAndResurfaces(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, prsWithViews, 1, "re-request must un-hide the row")
 	assert.True(t, prsWithViews[0].ViaManual)
+
+	// A user-hidden entry is also fully resurfaced by an explicit re-request.
+	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true))
+	require.NoError(t, db.EnsureManualPRView(user.ID, fetchedPR.ID, false))
+	prsWithViews, err = db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	require.Len(t, prsWithViews, 1)
+	assert.False(t, prsWithViews[0].UserHidden, "re-request must clear user_hidden")
+}
+
+func TestGormDB_HideNonManualViewsForPR(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	claimant := &User{GitHubID: 1, GitHubUsername: "claimant"}
+	teammate := &User{GitHubID: 2, GitHubUsername: "teammate"}
+	require.NoError(t, db.CreateUser(claimant))
+	require.NoError(t, db.CreateUser(teammate))
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "completed",
+	}))
+	pr, _ := db.GetPR("owner", "repo", 1)
+
+	require.NoError(t, db.EnsureManualPRView(claimant.ID, pr.ID, false))
+	require.NoError(t, db.EnsureUserPRView(teammate.ID, pr.ID, false))
+
+	require.NoError(t, db.HideNonManualViewsForPR(pr.ID))
+
+	claimantPRs, err := db.GetPRsForUserWithNotes(claimant.ID)
+	require.NoError(t, err)
+	assert.Len(t, claimantPRs, 1, "manual claimant keeps the retained PR")
+	teammatePRs, err := db.GetPRsForUserWithNotes(teammate.ID)
+	require.NoError(t, err)
+	assert.Len(t, teammatePRs, 0, "non-claimant views are hidden on retention")
 }
 
 func TestGormDB_EnsureManualPRView_PreservesViaTeamsAndNotes(t *testing.T) {

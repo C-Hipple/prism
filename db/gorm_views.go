@@ -407,8 +407,9 @@ func (g *GormDB) EnsureUserPRView(userID, prID int, isAuthor bool) error {
 
 // EnsureManualPRView records that the user manually requested a review for
 // this PR: creates the view row if missing, else sets via_manual=true and
-// hidden=false (re-requesting a deleted PR deliberately resurfaces it).
-// Everything else (notes, via_teams, user_hidden) is preserved.
+// clears both hidden flags — a paste-a-URL request is explicit, so it fully
+// resurfaces a previously deleted or user-hidden entry. Notes and via_teams
+// are preserved.
 func (g *GormDB) EnsureManualPRView(userID, prID int, isAuthor bool) error {
 	view := &UserPRViewModel{
 		UserID:    uint(userID),
@@ -419,8 +420,17 @@ func (g *GormDB) EnsureManualPRView(userID, prID int, isAuthor bool) error {
 
 	return g.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}, {Name: "pr_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"via_manual", "hidden"}),
+		DoUpdates: clause.AssignmentColumns([]string{"via_manual", "hidden", "user_hidden"}),
 	}).Create(view).Error
+}
+
+// HideNonManualViewsForPR soft-hides every view of a PR except live manual
+// claims. Used when closed-PR cleanup retains a PR for its manual claimants:
+// everyone else's dashboard should behave as if the row had been cleaned up.
+func (g *GormDB) HideNonManualViewsForPR(prID int) error {
+	return g.db.Model(&UserPRViewModel{}).
+		Where("pr_id = ? AND via_manual = ? AND hidden = ?", prID, false, false).
+		Update("hidden", true).Error
 }
 
 // GetPRIDsWithManualClaims returns the set of pr_ids that at least one user

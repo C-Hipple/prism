@@ -1096,6 +1096,18 @@ func (p *Poller) manualClaimPRIDs() (map[int]bool, bool) {
 	return claims, true
 }
 
+// retainForManualClaim handles a closed PR kept alive by a manual claim:
+// non-claimants' views are soft-hidden so their dashboards behave as if the
+// row had been cleaned up (they get no pr_deleted broadcast; the row drops
+// out on their next fetch). Best-effort — the retained row is re-processed
+// every cycle, so a failed hide self-heals.
+func (p *Poller) retainForManualClaim(prID int, key string) {
+	log.Printf("[CLEANUP] PR %s is closed but manually requested — keeping until the requester deletes it", key)
+	if err := p.db.HideNonManualViewsForPR(prID); err != nil {
+		log.Printf("[CLEANUP] WARN: could not hide non-manual views for retained PR %s: %v", key, err)
+	}
+}
+
 // cleanupClosedPRs removes PRs from the database and filesystem if they're closed on GitHub
 func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 	// Get all PRs from database
@@ -1106,7 +1118,7 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 
 	manualClaims, claimsOK := p.manualClaimPRIDs()
 	if !claimsOK {
-		return 0, nil
+		return 0, fmt.Errorf("skipping closed-PR cleanup: manual claims unavailable")
 	}
 
 	removed := 0
@@ -1122,8 +1134,7 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 		}
 
 		if !isOpen && manualClaims[pr.ID] {
-			log.Printf("[CLEANUP] PR %s/%s#%d is closed but manually requested — keeping until the requester deletes it",
-				pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			p.retainForManualClaim(pr.ID, fmt.Sprintf("%s/%s#%d", pr.RepoOwner, pr.RepoName, pr.PRNumber))
 			continue
 		}
 
@@ -1201,7 +1212,7 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 		if state.State != "OPEN" {
 			if !claimsOK || manualClaims[pr.ID] {
 				if claimsOK {
-					log.Printf("[CLEANUP] PR %s is %s but manually requested — keeping until the requester deletes it", key, state.State)
+					p.retainForManualClaim(pr.ID, key)
 				}
 				continue
 			}

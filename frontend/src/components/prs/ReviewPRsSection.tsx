@@ -130,9 +130,12 @@ export function ReviewPRsSection({
           <div className="section-header">
             <h2>Requested by Me ({requestedPRs.length})</h2>
           </div>
-          {isLoading && <LoadingSpinner />}
-          {error && <ErrorMessage message={`Error loading PRs: ${error.message}`} />}
-          {!isLoading && !error && requestedPRs.length > 0 && (
+          {requestedPRs.length === 0 && (
+            <p className="review-prs__empty-state">
+              No matching requested PRs
+            </p>
+          )}
+          {requestedPRs.length > 0 && (
             <PRTable prs={requestedPRs} showViaTeams={false} />
           )}
         </section>
