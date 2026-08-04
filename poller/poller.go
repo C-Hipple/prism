@@ -291,7 +291,10 @@ func (p *Poller) persistAgentFailureLog(logPath string) {
 
 // systemTelemetryUser is the reserved user that owns server-emitted
 // telemetry events (telemetry_events.user_id is NOT NULL with an FK).
-const systemTelemetryUser = "prism-system"
+// The underscore makes it structurally invalid as a GitHub username, so a
+// real login can never collide with (and out-sort) the system user in
+// GetUserByUsername.
+const systemTelemetryUser = "prism_system"
 
 // recordModelFallback writes an agent_model_fallback telemetry event so
 // fallback frequency is queryable from the telemetry dashboard alongside
@@ -302,7 +305,9 @@ func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served st
 	if err == nil && user == nil {
 		user = &db.User{GitHubID: -1, GitHubUsername: systemTelemetryUser}
 		if err = p.db.CreateUser(user); err != nil {
-			user = nil
+			// Concurrent fallbacks can race the first create (github_id is
+			// unique); the loser re-fetches the row the winner made.
+			user, err = p.db.GetUserByUsername(systemTelemetryUser)
 		}
 	}
 	if err != nil || user == nil {

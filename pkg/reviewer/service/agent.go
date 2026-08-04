@@ -338,10 +338,16 @@ func RunAgentReview(
 			logPrefix, checkTel.ChecksIssued, checkTel.ChecksAnswered, checkTel.ChecksViolated,
 			checkTel.ChecksEvidenceOK, len(checkFindings))
 	}
-	modelFallback := parseResult.servedModel != "" && !modelMatches(model, parseResult.servedModel)
+	servedModel := parseResult.servedModel
+	if parseResult.switchedModel != "" && !modelMatches(model, parseResult.switchedModel) {
+		// A mid-run switch to a non-matching model is a fallback even when
+		// the run started on the requested model.
+		servedModel = parseResult.switchedModel
+	}
+	modelFallback := servedModel != "" && !modelMatches(model, servedModel)
 	if modelFallback {
 		log.Printf("%s WARNING: MODEL FALLBACK: requested=%s served=%s — review ran on the wrong model",
-			logPrefix, model, parseResult.servedModel)
+			logPrefix, model, servedModel)
 	}
 
 	log.Printf("%s complete in %s (turns=%d, comments=%d, model=%s)",
@@ -358,7 +364,7 @@ func RunAgentReview(
 		CloneDir:       cloneDir,
 		LogPath:        logPath,
 		RequestedModel: model,
-		ServedModel:    parseResult.servedModel,
+		ServedModel:    servedModel,
 		ModelFallback:  modelFallback,
 	}, nil
 }
@@ -663,6 +669,7 @@ type agentParseResult struct {
 	streamErr      string // error the CLI reported inside the stream (result event with error subtype)
 	lastEvent      string // raw last stream line, fallback diagnostic when no structured error arrived
 	servedModel    string // model the CLI actually ran (init/assistant events), "" if never reported
+	switchedModel  string // a different model a later event reported (mid-run switch), "" if none
 }
 
 // diagnostic returns the best available explanation of a failed run — under
@@ -678,26 +685,26 @@ func (r *agentParseResult) diagnostic() string {
 	return "no stream output"
 }
 
-// noteServedModel records the first real model the stream reports. Error
+// noteServedModel records the models the stream reports: the first real one,
+// plus any different one a later event carries (a mid-run switch). Error
 // events carry the placeholder "<synthetic>" model — never a serving model.
 func (r *agentParseResult) noteServedModel(v any) {
-	if r.servedModel != "" {
+	s, ok := v.(string)
+	if !ok || s == "" || strings.HasPrefix(s, "<") {
 		return
 	}
-	if s, ok := v.(string); ok && s != "" && !strings.HasPrefix(s, "<") {
+	if r.servedModel == "" {
 		r.servedModel = s
+	} else if s != r.servedModel {
+		r.switchedModel = s
 	}
 }
 
 // modelMatches reports whether the served model satisfies the requested one.
-// Tolerates alias vs full id in either direction ("opus" vs "claude-opus-4-8",
-// "claude-fable-5" vs a dated "claude-fable-5-20260115").
+// Tolerates alias vs full id ("opus" vs "claude-opus-4-8", "claude-fable-5"
+// vs a dated "claude-fable-5-20260115").
 func modelMatches(requested, served string) bool {
-	requested = strings.ToLower(requested)
-	served = strings.ToLower(served)
-	return requested == served ||
-		strings.HasPrefix(served, requested) ||
-		strings.Contains(served, requested)
+	return strings.Contains(strings.ToLower(served), strings.ToLower(requested))
 }
 
 func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {

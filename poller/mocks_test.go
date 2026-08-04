@@ -275,6 +275,7 @@ type MockDatabase struct {
 
 	ManualClaimPRIDs        []int
 	TelemetryEvents         []db.TelemetryEvent
+	CreateUserErr           error
 	HideNonManualViewsCalls []int
 	EnsureUserPRViewCalls   []struct {
 		UserID   int
@@ -605,6 +606,11 @@ func (m *MockDatabase) GetAllUsers() ([]db.User, error) {
 func (m *MockDatabase) CreateUser(user *db.User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.CreateUserErr != nil {
+		// Simulate losing a create race: the winner's row exists, we error.
+		m.Users = append(m.Users, db.User{ID: len(m.Users) + 1, GitHubID: user.GitHubID, GitHubUsername: user.GitHubUsername})
+		return m.CreateUserErr
+	}
 	user.ID = len(m.Users) + 1
 	m.Users = append(m.Users, *user)
 	return nil

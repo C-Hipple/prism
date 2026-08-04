@@ -333,6 +333,23 @@ func TestRecordModelFallback_CreatesSystemUserAndEvent(t *testing.T) {
 	}
 }
 
+func TestRecordModelFallback_SurvivesCreateUserRace(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockDB.CreateUserErr = errors.New("duplicate key value violates unique constraint")
+	poller := newTestPoller(mockGH, mockDB)
+
+	poller.recordModelFallback(github.PullRequest{Owner: "owner", Repo: "repo", Number: 7},
+		"claude-fable-5", "claude-opus-4-8")
+
+	if len(mockDB.TelemetryEvents) != 1 {
+		t.Fatalf("losing the create race must not drop the event, got %d events", len(mockDB.TelemetryEvents))
+	}
+	if mockDB.TelemetryEvents[0].UserID == 0 {
+		t.Error("event must be attributed to the re-fetched system user")
+	}
+}
+
 func TestCleanupAndDetectOutdated_RestoresStateOfReopenedPR(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	mockDB := NewMockDatabase()

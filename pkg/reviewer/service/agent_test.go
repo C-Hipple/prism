@@ -283,6 +283,29 @@ func TestParseAgentStream_IgnoresSyntheticModel(t *testing.T) {
 	}
 }
 
+func TestParseAgentStream_RecordsMidRunModelSwitch(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","model":"claude-fable-5"}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"x"}]}}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"y"}]}}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseAgentStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if res.servedModel != "claude-fable-5" {
+		t.Errorf("servedModel: got %q", res.servedModel)
+	}
+	if res.switchedModel != "claude-opus-4-8" {
+		t.Errorf("switchedModel: got %q", res.switchedModel)
+	}
+}
+
 func TestModelMatches(t *testing.T) {
 	cases := []struct {
 		requested, served string
@@ -334,6 +357,43 @@ func TestRunAgentReview_DetectsModelFallback(t *testing.T) {
 	}
 	if out.ServedModel != "claude-opus-4-8" || out.RequestedModel != "claude-fable-5" {
 		t.Errorf("model fields: served=%q requested=%q", out.ServedModel, out.RequestedModel)
+	}
+}
+
+func TestRunAgentReview_DetectsMidRunFallback(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	// Starts on the requested model, switches to another partway through.
+	stream := `{"type":"system","subtype":"init","model":"claude-fable-5"}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"x"}]}}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"y"}]}}
+{"type":"result","result":"[]"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+		Model:        "claude-fable-5",
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if !out.ModelFallback {
+		t.Error("expected ModelFallback=true for a mid-run switch to a non-matching model")
+	}
+	if out.ServedModel != "claude-opus-4-8" {
+		t.Errorf("ServedModel should name the fallback model, got %q", out.ServedModel)
 	}
 }
 
