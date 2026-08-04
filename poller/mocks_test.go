@@ -275,7 +275,7 @@ type MockDatabase struct {
 
 	ManualClaimPRIDs        []int
 	HideNonManualViewsCalls []int
-	EnsureUserPRViewCalls []struct {
+	EnsureUserPRViewCalls   []struct {
 		UserID   int
 		PRID     int
 		IsAuthor bool
