@@ -697,6 +697,15 @@ func (m *MockDatabase) HideNonManualViewsForPR(prID int) error {
 	return nil
 }
 
+func (m *MockDatabase) SetPRState(owner, repo string, prNumber int, state string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pr, ok := m.PRs[prDBKey(owner, repo, prNumber)]; ok {
+		pr.PRState = state
+	}
+	return nil
+}
+
 func (m *MockDatabase) GetPRIDsWithManualClaims() (map[int]bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

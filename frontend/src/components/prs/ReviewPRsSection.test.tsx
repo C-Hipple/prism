@@ -282,17 +282,25 @@ describe('ReviewPRsSection', () => {
       error: null,
     });
 
-    const { getByText, getAllByTestId } = render(<ReviewPRsSection />);
+    const { getByText, getByRole, getAllByTestId } = render(<ReviewPRsSection />);
 
-    expect(getByText('Requested by Me (2)')).toBeTruthy();
+    const toggle = getByRole('button', { name: /requested by me \(2\)/i });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(getByText('My PRs (1)')).toBeTruthy();
     expect(getByText('PRs to Review (1)')).toBeTruthy();
 
-    const tables = getAllByTestId('pr-table-rows');
+    let tables = getAllByTestId('pr-table-rows');
     expect(tables[0].textContent).toContain('Requested merged PR');
     expect(tables[0].textContent).toContain('Requested own PR');
     expect(tables[1].textContent).toBe('My normal PR');
     expect(tables[2].textContent).toBe('Review PR');
+
+    // Collapsible like the Hidden section, but starts expanded.
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    tables = getAllByTestId('pr-table-rows');
+    expect(tables).toHaveLength(2);
+    expect(tables[0].textContent).toBe('My normal PR');
   });
 
   it('shows an empty state when filters exclude all requested PRs', () => {
@@ -306,8 +314,8 @@ describe('ReviewPRsSection', () => {
       error: null,
     });
 
-    const { getByText } = render(<ReviewPRsSection searchTerm="billing" />);
-    expect(getByText('Requested by Me (0)')).toBeTruthy();
+    const { getByText, getByRole } = render(<ReviewPRsSection searchTerm="billing" />);
+    expect(getByRole('button', { name: /requested by me \(0\)/i })).toBeTruthy();
     expect(getByText('No matching requested PRs')).toBeTruthy();
   });
 

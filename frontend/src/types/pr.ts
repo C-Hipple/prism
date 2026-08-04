@@ -38,4 +38,7 @@ export interface PR {
   // User manually requested a review for this PR (Requested by Me section).
   // Optional for the same older-payload reason as hidden.
   via_manual?: boolean;
+  // GitHub PR state. Only diverges from 'open' on manually requested PRs
+  // retained past close. Optional for the same older-payload reason.
+  pr_state?: 'open' | 'closed' | 'merged';
 }
