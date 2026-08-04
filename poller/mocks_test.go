@@ -273,7 +273,9 @@ type MockDatabase struct {
 		ViaTeams []string
 	}
 
-	EnsureUserPRViewCalls []struct {
+	ManualClaimPRIDs        []int
+	HideNonManualViewsCalls []int
+	EnsureUserPRViewCalls   []struct {
 		UserID   int
 		PRID     int
 		IsAuthor bool
@@ -682,6 +684,27 @@ func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error {
 		IsAuthor bool
 	}{userID, prID, isAuthor})
 	return nil
+}
+
+func (m *MockDatabase) EnsureManualPRView(userID, prID int, isAuthor bool) error {
+	return nil
+}
+
+func (m *MockDatabase) HideNonManualViewsForPR(prID int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.HideNonManualViewsCalls = append(m.HideNonManualViewsCalls, prID)
+	return nil
+}
+
+func (m *MockDatabase) GetPRIDsWithManualClaims() (map[int]bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	claims := make(map[int]bool, len(m.ManualClaimPRIDs))
+	for _, id := range m.ManualClaimPRIDs {
+		claims[id] = true
+	}
+	return claims, nil
 }
 
 func (m *MockDatabase) BatchUpsertPRs(prs []*db.PR) error {

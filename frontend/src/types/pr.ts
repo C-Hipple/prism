@@ -35,4 +35,7 @@ export interface PR {
   // websocket payloads from older servers (which omit it) stay valid and
   // read as "not hidden".
   hidden?: boolean;
+  // User manually requested a review for this PR (Requested by Me section).
+  // Optional for the same older-payload reason as hidden.
+  via_manual?: boolean;
 }

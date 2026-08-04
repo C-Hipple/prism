@@ -1299,6 +1299,131 @@ func TestGormDB_EnsureUserPRView_PreservesViaTeams(t *testing.T) {
 		"via_teams must survive EnsureUserPRView calls")
 }
 
+func TestGormDB_EnsureManualPRView_CreatesAndResurfaces(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "testuser"}
+	require.NoError(t, db.CreateUser(user))
+	pr := &PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "generating",
+	}
+	require.NoError(t, db.UpsertPR(pr))
+	fetchedPR, _ := db.GetPR("owner", "repo", 1)
+
+	require.NoError(t, db.EnsureManualPRView(user.ID, fetchedPR.ID, false))
+
+	prsWithViews, err := db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	require.Len(t, prsWithViews, 1)
+	assert.True(t, prsWithViews[0].ViaManual, "manual request must set via_manual")
+
+	// Deleting (HidePRForUser) removes it from the user's list...
+	require.NoError(t, db.HidePRForUser(user.ID, fetchedPR.ID))
+	prsWithViews, err = db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	assert.Len(t, prsWithViews, 0)
+
+	// ...and re-requesting resurfaces it with via_manual still set.
+	require.NoError(t, db.EnsureManualPRView(user.ID, fetchedPR.ID, false))
+	prsWithViews, err = db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	require.Len(t, prsWithViews, 1, "re-request must un-hide the row")
+	assert.True(t, prsWithViews[0].ViaManual)
+
+	// A user-hidden entry is also fully resurfaced by an explicit re-request.
+	require.NoError(t, db.SetUserHiddenForPR(user.ID, fetchedPR.ID, true))
+	require.NoError(t, db.EnsureManualPRView(user.ID, fetchedPR.ID, false))
+	prsWithViews, err = db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	require.Len(t, prsWithViews, 1)
+	assert.False(t, prsWithViews[0].UserHidden, "re-request must clear user_hidden")
+}
+
+func TestGormDB_HideNonManualViewsForPR(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	claimant := &User{GitHubID: 1, GitHubUsername: "claimant"}
+	teammate := &User{GitHubID: 2, GitHubUsername: "teammate"}
+	require.NoError(t, db.CreateUser(claimant))
+	require.NoError(t, db.CreateUser(teammate))
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "completed",
+	}))
+	pr, _ := db.GetPR("owner", "repo", 1)
+
+	require.NoError(t, db.EnsureManualPRView(claimant.ID, pr.ID, false))
+	require.NoError(t, db.EnsureUserPRView(teammate.ID, pr.ID, false))
+
+	require.NoError(t, db.HideNonManualViewsForPR(pr.ID))
+
+	claimantPRs, err := db.GetPRsForUserWithNotes(claimant.ID)
+	require.NoError(t, err)
+	assert.Len(t, claimantPRs, 1, "manual claimant keeps the retained PR")
+	teammatePRs, err := db.GetPRsForUserWithNotes(teammate.ID)
+	require.NoError(t, err)
+	assert.Len(t, teammatePRs, 0, "non-claimant views are hidden on retention")
+}
+
+func TestGormDB_EnsureManualPRView_PreservesViaTeamsAndNotes(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "testuser"}
+	require.NoError(t, db.CreateUser(user))
+	pr := &PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "completed",
+	}
+	require.NoError(t, db.UpsertPR(pr))
+	fetchedPR, _ := db.GetPR("owner", "repo", 1)
+
+	require.NoError(t, db.EnsureUserPRView(user.ID, fetchedPR.ID, false))
+	require.NoError(t, db.UpdateUserViaTeams(user.ID, fetchedPR.ID, []string{"team-alpha:approved"}))
+	require.NoError(t, db.UpdateUserPRNotes(user.ID, fetchedPR.ID, "mine"))
+
+	require.NoError(t, db.EnsureManualPRView(user.ID, fetchedPR.ID, false))
+
+	prsWithViews, err := db.GetPRsForUserWithNotes(user.ID)
+	require.NoError(t, err)
+	require.Len(t, prsWithViews, 1)
+	assert.True(t, prsWithViews[0].ViaManual)
+	assert.Contains(t, prsWithViews[0].ViaTeams, "team-alpha:approved")
+	assert.Equal(t, "mine", prsWithViews[0].UserNotes)
+}
+
+func TestGormDB_GetPRIDsWithManualClaims(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	user := &User{GitHubID: 12345, GitHubUsername: "testuser"}
+	require.NoError(t, db.CreateUser(user))
+	for i := 1; i <= 3; i++ {
+		require.NoError(t, db.UpsertPR(&PR{
+			RepoOwner: "owner", RepoName: "repo", PRNumber: i,
+			LastCommitSHA: "abc123", Status: "completed",
+		}))
+	}
+	pr1, _ := db.GetPR("owner", "repo", 1)
+	pr2, _ := db.GetPR("owner", "repo", 2)
+	pr3, _ := db.GetPR("owner", "repo", 3)
+
+	// pr1: live manual claim. pr2: manual but deleted by the user. pr3: team-assigned only.
+	require.NoError(t, db.EnsureManualPRView(user.ID, pr1.ID, false))
+	require.NoError(t, db.EnsureManualPRView(user.ID, pr2.ID, false))
+	require.NoError(t, db.HidePRForUser(user.ID, pr2.ID))
+	require.NoError(t, db.EnsureUserPRView(user.ID, pr3.ID, false))
+
+	claims, err := db.GetPRIDsWithManualClaims()
+	require.NoError(t, err)
+	assert.True(t, claims[pr1.ID], "live manual claim must be returned")
+	assert.False(t, claims[pr2.ID], "deleted (hidden) manual claim must lapse")
+	assert.False(t, claims[pr3.ID], "team assignment is not a manual claim")
+}
+
 // =============================================================================
 // Edge Cases and Integration Tests
 // =============================================================================
