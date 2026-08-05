@@ -416,8 +416,12 @@
             const number = index + 1;
             const url = commentLinkFor(number);
             // replaceState, not location.hash: shows the shareable URL in the
-            // address bar without scrolling the page or pushing history.
-            history.replaceState(null, '', `#comment-${number}`);
+            // address bar without scrolling the page or pushing history. Some
+            // browsers throw SecurityError for replaceState on file:// — the
+            // highlight and clipboard copy must still run there.
+            try {
+                history.replaceState(null, '', `#comment-${number}`);
+            } catch (e) { /* address bar keeps the old fragment; copy still works */ }
             highlightComment(index);
             currentCommentIndex = index;
             copyToClipboard(url).then((ok) => {
