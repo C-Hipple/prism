@@ -338,20 +338,28 @@ func RunAgentReview(
 			logPrefix, checkTel.ChecksIssued, checkTel.ChecksAnswered, checkTel.ChecksViolated,
 			checkTel.ChecksEvidenceOK, len(checkFindings))
 	}
-	servedModel := parseResult.servedModel
-	if parseResult.switchedModel != "" && !modelMatches(model, parseResult.switchedModel) {
-		// A mid-run switch to a non-matching model is a fallback even when
-		// the run started on the requested model.
-		servedModel = parseResult.switchedModel
+	// Fallback if ANY served model fails to match — a transient fallback
+	// that recovers mid-run still ran turns on the wrong model. ServedModel
+	// reports the offender (or the primary model on a clean run).
+	servedModel := ""
+	modelFallback := false
+	if len(parseResult.servedModels) > 0 {
+		servedModel = parseResult.servedModels[0]
 	}
-	modelFallback := servedModel != "" && !modelMatches(model, servedModel)
+	for _, m := range parseResult.servedModels {
+		if !modelMatches(model, m) {
+			servedModel = m
+			modelFallback = true
+			break
+		}
+	}
 	if modelFallback {
-		log.Printf("%s WARNING: MODEL FALLBACK: requested=%s served=%s — review ran on the wrong model",
-			logPrefix, model, servedModel)
+		log.Printf("%s WARNING: MODEL FALLBACK: requested=%s served=%s (all seen: %v) — review ran on the wrong model",
+			logPrefix, model, servedModel, parseResult.servedModels)
 	}
 
 	log.Printf("%s complete in %s (turns=%d, comments=%d, model=%s)",
-		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments), parseResult.servedModel)
+		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments), servedModel)
 
 	logRemovable = true
 	return &AgentReview{
@@ -666,10 +674,9 @@ func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
 type agentParseResult struct {
 	finalOutput    string
 	assistantTurns int
-	streamErr      string // error the CLI reported inside the stream (result event with error subtype)
-	lastEvent      string // raw last stream line, fallback diagnostic when no structured error arrived
-	servedModel    string // model the CLI actually ran (init/assistant events), "" if never reported
-	switchedModel  string // a different model a later event reported (mid-run switch), "" if none
+	streamErr      string   // error the CLI reported inside the stream (result event with error subtype)
+	lastEvent      string   // raw last stream line, fallback diagnostic when no structured error arrived
+	servedModels   []string // distinct models the stream reported, in first-seen order; empty if never reported
 }
 
 // diagnostic returns the best available explanation of a failed run — under
@@ -685,26 +692,31 @@ func (r *agentParseResult) diagnostic() string {
 	return "no stream output"
 }
 
-// noteServedModel records the models the stream reports: the first real one,
-// plus any different one a later event carries (a mid-run switch). Error
-// events carry the placeholder "<synthetic>" model — never a serving model.
+// noteServedModel records every distinct model the stream reports, in
+// first-seen order — a transient mid-run fallback must not be masked by a
+// later recovery to the original model. Error events carry the placeholder
+// "<synthetic>" model — never a serving model.
 func (r *agentParseResult) noteServedModel(v any) {
 	s, ok := v.(string)
 	if !ok || s == "" || strings.HasPrefix(s, "<") {
 		return
 	}
-	if r.servedModel == "" {
-		r.servedModel = s
-	} else if s != r.servedModel {
-		r.switchedModel = s
+	for _, m := range r.servedModels {
+		if m == s {
+			return
+		}
 	}
+	r.servedModels = append(r.servedModels, s)
 }
 
 // modelMatches reports whether the served model satisfies the requested one.
-// Tolerates alias vs full id ("opus" vs "claude-opus-4-8", "claude-fable-5"
-// vs a dated "claude-fable-5-20260115").
+// Substring in either direction tolerates alias vs full id ("opus" vs
+// "claude-opus-4-8") and dated vs undated ids in config or stream
+// ("claude-fable-5-20260115" vs "claude-fable-5") without false alarms.
 func modelMatches(requested, served string) bool {
-	return strings.Contains(strings.ToLower(served), strings.ToLower(requested))
+	requested = strings.ToLower(requested)
+	served = strings.ToLower(served)
+	return strings.Contains(served, requested) || strings.Contains(requested, served)
 }
 
 func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {

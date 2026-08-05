@@ -259,8 +259,8 @@ func TestParseAgentStream_CapturesServedModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseAgentStream: %v", err)
 	}
-	if res.servedModel != "claude-opus-4-8" {
-		t.Errorf("servedModel: got %q want claude-opus-4-8", res.servedModel)
+	if len(res.servedModels) != 1 || res.servedModels[0] != "claude-opus-4-8" {
+		t.Errorf("servedModels: got %v want [claude-opus-4-8]", res.servedModels)
 	}
 }
 
@@ -278,8 +278,8 @@ func TestParseAgentStream_IgnoresSyntheticModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseAgentStream: %v", err)
 	}
-	if res.servedModel != "claude-fable-5" {
-		t.Errorf("servedModel: got %q want claude-fable-5 (synthetic must be skipped)", res.servedModel)
+	if len(res.servedModels) != 1 || res.servedModels[0] != "claude-fable-5" {
+		t.Errorf("servedModels: got %v want [claude-fable-5] (synthetic must be skipped)", res.servedModels)
 	}
 }
 
@@ -298,11 +298,8 @@ func TestParseAgentStream_RecordsMidRunModelSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseAgentStream: %v", err)
 	}
-	if res.servedModel != "claude-fable-5" {
-		t.Errorf("servedModel: got %q", res.servedModel)
-	}
-	if res.switchedModel != "claude-opus-4-8" {
-		t.Errorf("switchedModel: got %q", res.switchedModel)
+	if len(res.servedModels) != 2 || res.servedModels[0] != "claude-fable-5" || res.servedModels[1] != "claude-opus-4-8" {
+		t.Errorf("servedModels: got %v want [claude-fable-5 claude-opus-4-8]", res.servedModels)
 	}
 }
 
@@ -313,6 +310,7 @@ func TestModelMatches(t *testing.T) {
 	}{
 		{"claude-fable-5", "claude-fable-5", true},
 		{"claude-fable-5", "claude-fable-5-20260115", true},
+		{"claude-fable-5-20260115", "claude-fable-5", true},
 		{"opus", "claude-opus-4-8", true},
 		{"claude-fable-5", "claude-opus-4-8", false},
 		{"claude-opus-4-8", "claude-fable-5", false},
@@ -365,10 +363,12 @@ func TestRunAgentReview_DetectsMidRunFallback(t *testing.T) {
 	cloneRoot := t.TempDir()
 	seedAgentCache(t, cloneRoot, "acme", "example", bare)
 
-	// Starts on the requested model, switches to another partway through.
+	// Starts on the requested model, falls back partway through, then
+	// RECOVERS — the transient fallback must still be flagged.
 	stream := `{"type":"system","subtype":"init","model":"claude-fable-5"}
 {"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"x"}]}}
 {"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"y"}]}}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"z"}]}}
 {"type":"result","result":"[]"}
 `
 	spawner := &fakeSpawner{proc: &fakeProcess{
