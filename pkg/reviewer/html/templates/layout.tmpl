@@ -26,7 +26,18 @@
         .comment-body { background-color: #1f2a50; border: 1px solid #2a3b4d; border-radius: 6px; padding: 15px; margin: 5px 0; }
         .comment-body pre { background-color: #161b22; padding: 10px; border-radius: 3px; }
         .comment-body code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; }
-        .comment-counter { font-size: 12px; font-weight: bold; color: #a3a3a3; margin-bottom: 10px; text-align: right; }
+        .comment-counter { display: flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 12px; font-weight: bold; color: #a3a3a3; margin-bottom: 10px; }
+        /* Copy-a-deep-link button. Kept quiet until hover so it doesn't compete
+           with the review prose, but always present (not hover-only) so it is
+           reachable on touch and by keyboard. */
+        .comment-link-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; padding: 3px; background: none; border: none; border-radius: 4px; color: #8b949e; cursor: pointer; line-height: 0; }
+        .comment-link-btn:hover { color: #58a6ff; background-color: rgba(88, 166, 255, 0.15); }
+        .comment-link-btn:focus-visible { outline: 1px solid #58a6ff; outline-offset: 1px; }
+        /* Transient "Link copied" pill. Sits below the button rather than beside
+           it — the counter text is immediately to its left. */
+        .comment-link-btn[data-flash]::after { content: attr(data-flash); position: absolute; top: 100%; right: 0; margin-top: 6px; padding: 3px 9px; border-radius: 10px; background-color: #1f6feb; color: #f0f6fc; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.4); z-index: 5; }
+        /* Ring on the comment the current #comment-N fragment points at. */
+        .comment-highlight { box-shadow: 0 0 0 2px #d29922; }
         /* Pinned deterministic-alerts section (SURFACE_ALERTS): visually distinct from
            agent prose — amber warning frame, always the first block of the report. */
         .deterministic-alerts { background-color: #2d1a05; border: 2px solid #d29922; border-radius: 6px; padding: 15px 20px; margin-bottom: 20px; }
@@ -306,7 +317,8 @@
 
     <div class="help-tooltip">
       Press J to scroll to next review comment<br>
-      Press K to scroll to previous review comment
+      Press K to scroll to previous review comment<br>
+      Click the 🔗 on a comment to copy a link to it
     </div>
 
     {{template "sidebar" .}}
@@ -324,14 +336,121 @@
         const comments = document.querySelectorAll('.comment-body, .summary-comment, .general-comment');
         const totalComments = comments.length;
 
+        let currentCommentIndex = -1;
+
+        // Document order is the numbering the report shows and the identity the
+        // #comment-N deep links use, so the id and the label are assigned in the
+        // same pass. Server-side .Counter follows the raw comment slice, which
+        // does not match document order — it is only a no-JS fallback.
         comments.forEach((comment, index) => {
+            const number = index + 1;
+            comment.id = `comment-${number}`;
+
             const counterDiv = comment.querySelector('.comment-counter');
-            if (counterDiv) {
-                counterDiv.textContent = `Comment ${index + 1} of ${totalComments}`;
+            if (!counterDiv) return;
+
+            const textEl = counterDiv.querySelector('.comment-counter-text');
+            if (textEl) {
+                textEl.textContent = `Comment ${number} of ${totalComments}`;
+            } else {
+                counterDiv.textContent = `Comment ${number} of ${totalComments}`;
+            }
+
+            const linkBtn = counterDiv.querySelector('.comment-link-btn');
+            if (linkBtn) {
+                linkBtn.addEventListener('click', () => shareCommentLink(linkBtn, index));
             }
         });
 
-        let currentCommentIndex = -1;
+        function commentLinkFor(number) {
+            // Split rather than use location.origin + pathname: this keeps any
+            // query string (?format=html, ?sha=…) and works for file:// copies,
+            // where origin is "null".
+            return `${location.href.split('#')[0]}#comment-${number}`;
+        }
+
+        function copyToClipboard(text) {
+            // navigator.clipboard needs a secure context; reports are also read
+            // over plain http and straight off disk, so keep the legacy path.
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                return navigator.clipboard.writeText(text).then(() => true, () => legacyCopy(text));
+            }
+            return Promise.resolve(legacyCopy(text));
+        }
+
+        function legacyCopy(text) {
+            const scratch = document.createElement('textarea');
+            scratch.value = text;
+            scratch.setAttribute('readonly', '');
+            scratch.style.position = 'fixed';
+            scratch.style.opacity = '0';
+            document.body.appendChild(scratch);
+            let ok = false;
+            try {
+                scratch.select();
+                ok = document.execCommand('copy');
+            } catch (e) {
+                ok = false;
+            }
+            scratch.remove();
+            return ok;
+        }
+
+        let flashTimer = null;
+
+        function flashButton(btn, message) {
+            if (flashTimer) {
+                clearTimeout(flashTimer);
+                document.querySelectorAll('.comment-link-btn[data-flash]').forEach(el => el.removeAttribute('data-flash'));
+            }
+            btn.setAttribute('data-flash', message);
+            flashTimer = setTimeout(() => {
+                btn.removeAttribute('data-flash');
+                flashTimer = null;
+            }, 1800);
+        }
+
+        function shareCommentLink(btn, index) {
+            const number = index + 1;
+            const url = commentLinkFor(number);
+            // replaceState, not location.hash: shows the shareable URL in the
+            // address bar without scrolling the page or pushing history.
+            history.replaceState(null, '', `#comment-${number}`);
+            highlightComment(index);
+            currentCommentIndex = index;
+            copyToClipboard(url).then((ok) => {
+                flashButton(btn, ok ? 'Link copied' : 'Copy from address bar');
+            });
+        }
+
+        function highlightComment(index) {
+            comments.forEach(c => c.classList.remove('comment-highlight'));
+            if (index >= 0 && index < comments.length) {
+                comments[index].classList.add('comment-highlight');
+            }
+        }
+
+        function focusCommentFromHash(behavior) {
+            const match = /^#comment-(\d+)$/.exec(location.hash);
+            if (!match) {
+                highlightComment(-1);
+                return;
+            }
+            const index = parseInt(match[1], 10) - 1;
+            if (index < 0 || index >= comments.length) {
+                highlightComment(-1);
+                return;
+            }
+            highlightComment(index);
+            // J/K picks up from the linked comment rather than the top.
+            currentCommentIndex = index;
+            comments[index].scrollIntoView({ behavior: behavior, block: 'center' });
+        }
+
+        // The ids above only exist now, so the browser's own fragment jump has
+        // already come up empty — do it here instead.
+        focusCommentFromHash('auto');
+        window.addEventListener('hashchange', () => focusCommentFromHash('smooth'));
 
         document.addEventListener('keydown', (e) => {
             const key = (e.key || '').toLowerCase();
