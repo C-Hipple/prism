@@ -453,3 +453,41 @@ index 123..456 100644
 		"off-diff whole-file comment should render exactly once in the adjacent section")
 	assert.Contains(t, report, "adjacent-section")
 }
+
+func TestGenerateReport_CommentPermalinkButtons(t *testing.T) {
+	// Every rendered comment gets a copy-link button, whatever section it lands
+	// in: summary, general, inline-with-diff, whole-file, and adjacent.
+	comments := []types.LineComment{
+		{FilePath: "app.go", LineNumber: 13, CommentBody: "Inline finding", Importance: "HIGH"},
+		{FilePath: "app.go", LineNumber: 0, CommentBody: "Whole-file finding", Importance: "MEDIUM"},
+		{FilePath: "GENERAL", LineNumber: 0, CommentBody: "General finding", Importance: "LOW"},
+		{FilePath: "SUMMARY", LineNumber: 0, CommentBody: "Summary finding", Importance: ""},
+		{FilePath: "other.go", LineNumber: 2, CommentBody: "Adjacent finding", Importance: "LOW"},
+	}
+
+	diff := `diff --git a/app.go b/app.go
+index 123..456 100644
+--- a/app.go
++++ b/app.go
+@@ -12,6 +12,7 @@ func main() {
+ 	fmt.Println("Hello")
++	// New line
+ }`
+
+	fileContents := map[string]string{"other.go": "package other\n\nfunc f() {}\n"}
+	testTime := time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)
+	report, err := GenerateReportWithContext(comments, diff, 123, "https://github.com/test-owner/test-repo/pull/123", "Test PR body", "", "abc1234", "gemini-pro", 0, 0, 0, testTime, fileContents)
+	assert.NoError(t, err)
+
+	assert.Equal(t, 5, strings.Count(report, `aria-label="Copy link to this comment"`),
+		"each of the five rendered comments should carry a copy-link button")
+
+	// The label lives in its own span so the load-time renumbering can rewrite
+	// the text without wiping out the button next to it.
+	assert.Equal(t, 5, strings.Count(report, `class="comment-counter-text"`))
+
+	// Runtime wiring: ids to link to, and fragment handling to act on them.
+	assert.Contains(t, report, "comment.id = `comment-${number}`")
+	assert.Contains(t, report, "focusCommentFromHash")
+	assert.Contains(t, report, "hashchange")
+}
