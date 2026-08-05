@@ -298,8 +298,9 @@ const systemTelemetryUser = "prism_system"
 
 // recordModelFallback writes an agent_model_fallback telemetry event so
 // fallback frequency is queryable from the telemetry dashboard alongside
-// user events. Events are attributed to a reserved "prism-system" user
-// (telemetry_events.user_id is NOT NULL with an FK). Best-effort.
+// user events. Events are attributed to the reserved user named by
+// systemTelemetryUser (telemetry_events.user_id is NOT NULL with an FK).
+// Best-effort.
 func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served string) {
 	user, err := p.db.GetUserByUsername(systemTelemetryUser)
 	if err == nil && user == nil {

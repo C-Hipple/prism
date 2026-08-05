@@ -712,6 +712,11 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 		Owner  string `json:"owner"`
 		Repo   string `json:"repo"`
 		Number int    `json:"number"`
+		// "form" = the dashboard's paste-a-URL input, the one origin that
+		// claims the PR into the requester's Requested by Me section.
+		// API/skill callers omit it: their reviews run but stay off the
+		// requester's dashboard.
+		Source string `json:"source"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[API] generate-review: bad request body: %v", err)
@@ -793,8 +798,9 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 
 	// Claim the PR for the requester so it lands in their "Requested by Me"
 	// section, and stays there (closed-PR cleanup skips live manual claims)
-	// until they delete it.
-	if user := auth.GetCurrentUser(r); user != nil {
+	// until they delete it. Form submissions only — a paste into the
+	// dashboard input is deliberate; API/skill traffic is not.
+	if user := auth.GetCurrentUser(r); user != nil && req.Source == "form" {
 		if dbPR, err := s.db.GetPR(req.Owner, req.Repo, req.Number); err == nil && dbPR != nil {
 			isAuthor := strings.EqualFold(author, user.GitHubUsername)
 			if err := s.db.EnsureManualPRView(user.ID, dbPR.ID, isAuthor); err != nil {

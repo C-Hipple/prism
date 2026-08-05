@@ -315,6 +315,10 @@ func TestModelMatches(t *testing.T) {
 		{"claude-fable-5", "claude-opus-4-8", false},
 		{"claude-opus-4-8", "claude-fable-5", false},
 		{"Claude-Fable-5", "claude-fable-5", true},
+		// Documented blind spot, pinned deliberately: a same-family version
+		// swap where one id prefixes the other is NOT detected. Configure
+		// full model ids so this shape cannot arise.
+		{"claude-opus-4", "claude-opus-4-8", true},
 	}
 	for _, c := range cases {
 		if got := modelMatches(c.requested, c.served); got != c.want {
