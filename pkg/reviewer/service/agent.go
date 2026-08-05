@@ -345,6 +345,10 @@ func RunAgentReview(
 	modelFallback := false
 	if len(parseResult.servedModels) > 0 {
 		servedModel = parseResult.servedModels[0]
+	} else {
+		// Fail-open for a monitoring feature: make a silent regression in
+		// the CLI's model reporting visible in logs.
+		log.Printf("%s WARNING: stream reported no serving model — fallback detection skipped", logPrefix)
 	}
 	for _, m := range parseResult.servedModels {
 		if !modelMatches(model, m) {
@@ -713,6 +717,9 @@ func (r *agentParseResult) noteServedModel(v any) {
 // Substring in either direction tolerates alias vs full id ("opus" vs
 // "claude-opus-4-8") and dated vs undated ids in config or stream
 // ("claude-fable-5-20260115" vs "claude-fable-5") without false alarms.
+// Known blind spot: a same-family version swap where one id prefixes the
+// other (requested "claude-opus-4", served "claude-opus-4-8") is NOT
+// detected — configure full model ids to avoid it.
 func modelMatches(requested, served string) bool {
 	requested = strings.ToLower(requested)
 	served = strings.ToLower(served)
