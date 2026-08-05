@@ -70,6 +70,14 @@ type AgentReview struct {
 	RawFinal string // the agent's final result text (pre-parse, for debugging)
 	CloneDir string // path to the per-invocation clone (kept for inspection)
 	LogPath  string // where the raw stream-json was written (removed by then — /tmp hygiene)
+
+	// Model verification: the CLI reports the serving model in the stream
+	// (init + assistant events). ModelFallback means it did not satisfy the
+	// requested model — the review still publishes, but callers must surface
+	// it loudly (log, telemetry, dashboard badge).
+	RequestedModel string
+	ServedModel    string
+	ModelFallback  bool
 }
 
 // Spawner abstracts subprocess creation so tests can stub the `claude` CLI.
@@ -330,19 +338,42 @@ func RunAgentReview(
 			logPrefix, checkTel.ChecksIssued, checkTel.ChecksAnswered, checkTel.ChecksViolated,
 			checkTel.ChecksEvidenceOK, len(checkFindings))
 	}
-	log.Printf("%s complete in %s (turns=%d, comments=%d)",
-		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments))
+	// Fallback if ANY served model fails to match — a transient fallback
+	// that recovers mid-run still ran turns on the wrong model. ServedModel
+	// reports the offender (or the primary model on a clean run).
+	servedModel := ""
+	modelFallback := false
+	if len(parseResult.servedModels) > 0 {
+		servedModel = parseResult.servedModels[0]
+	}
+	for _, m := range parseResult.servedModels {
+		if !modelMatches(model, m) {
+			servedModel = m
+			modelFallback = true
+			break
+		}
+	}
+	if modelFallback {
+		log.Printf("%s WARNING: MODEL FALLBACK: requested=%s served=%s (all seen: %v) — review ran on the wrong model",
+			logPrefix, model, servedModel, parseResult.servedModels)
+	}
+
+	log.Printf("%s complete in %s (turns=%d, comments=%d, model=%s)",
+		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments), servedModel)
 
 	logRemovable = true
 	return &AgentReview{
-		Comments:      comments,
-		Gates:         gates,
-		BugMemory:     memMatch,
-		Checks:        checkTel,
-		CheckFindings: checkFindings,
-		RawFinal:      parseResult.finalOutput,
-		CloneDir:      cloneDir,
-		LogPath:       logPath,
+		Comments:       comments,
+		Gates:          gates,
+		BugMemory:      memMatch,
+		Checks:         checkTel,
+		CheckFindings:  checkFindings,
+		RawFinal:       parseResult.finalOutput,
+		CloneDir:       cloneDir,
+		LogPath:        logPath,
+		RequestedModel: model,
+		ServedModel:    servedModel,
+		ModelFallback:  modelFallback,
 	}, nil
 }
 
@@ -643,8 +674,9 @@ func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
 type agentParseResult struct {
 	finalOutput    string
 	assistantTurns int
-	streamErr      string // error the CLI reported inside the stream (result event with error subtype)
-	lastEvent      string // raw last stream line, fallback diagnostic when no structured error arrived
+	streamErr      string   // error the CLI reported inside the stream (result event with error subtype)
+	lastEvent      string   // raw last stream line, fallback diagnostic when no structured error arrived
+	servedModels   []string // distinct models the stream reported, in first-seen order; empty if never reported
 }
 
 // diagnostic returns the best available explanation of a failed run — under
@@ -658,6 +690,33 @@ func (r *agentParseResult) diagnostic() string {
 		return "last event: " + r.lastEvent
 	}
 	return "no stream output"
+}
+
+// noteServedModel records every distinct model the stream reports, in
+// first-seen order — a transient mid-run fallback must not be masked by a
+// later recovery to the original model. Error events carry the placeholder
+// "<synthetic>" model — never a serving model.
+func (r *agentParseResult) noteServedModel(v any) {
+	s, ok := v.(string)
+	if !ok || s == "" || strings.HasPrefix(s, "<") {
+		return
+	}
+	for _, m := range r.servedModels {
+		if m == s {
+			return
+		}
+	}
+	r.servedModels = append(r.servedModels, s)
+}
+
+// modelMatches reports whether the served model satisfies the requested one.
+// Substring in either direction tolerates alias vs full id ("opus" vs
+// "claude-opus-4-8") and dated vs undated ids in config or stream
+// ("claude-fable-5-20260115" vs "claude-fable-5") without false alarms.
+func modelMatches(requested, served string) bool {
+	requested = strings.ToLower(requested)
+	served = strings.ToLower(served)
+	return strings.Contains(served, requested) || strings.Contains(requested, served)
 }
 
 func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {
@@ -679,7 +738,14 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		}
 
 		switch ev["type"] {
+		case "system":
+			if ev["subtype"] == "init" {
+				result.noteServedModel(ev["model"])
+			}
 		case "assistant":
+			if msg, ok := ev["message"].(map[string]any); ok {
+				result.noteServedModel(msg["model"])
+			}
 			result.assistantTurns++
 			if result.assistantTurns%5 == 0 || result.assistantTurns == 1 {
 				log.Printf("[AGENT] assistant turn %d/%d", result.assistantTurns, maxTurns)

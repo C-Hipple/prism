@@ -30,6 +30,7 @@ type PR struct {
 	CIState         string     // CI status: "success", "failure", "pending", "unknown"
 	CIFailedChecks  string     // JSON array of failed check names
 	PRState         string     // GitHub PR state: "open", "closed", "merged"
+	ModelFallback   bool       // latest review ran on a fallback model, not the requested one
 	// Review importance counts
 	CriticalCount int // Number of CRITICAL importance comments
 	MediumCount   int // Number of MEDIUM importance comments
@@ -208,7 +209,7 @@ type Database interface {
 	SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool) error
 	SetPRAgentReviewing(owner, repo string, prNumber int) error
 	SetPRError(owner, repo string, prNumber int, message string) error
-	MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string) error
+	MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool) error
 	GetAllPRs() ([]PR, error)
 	DeletePR(owner, repo string, prNumber int) error
 	ResetStaleGeneratingPRs(timeoutMinutes int) (int, error)

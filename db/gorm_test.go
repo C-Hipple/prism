@@ -219,7 +219,7 @@ func TestGormDB_UpsertPR_DoesNotClobberReviewState(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mark it completed via the dedicated setter.
-	err = db.MarkPRCompleted("owner", "repo", 1, "abc123", "review.html", 1, 2, 3, "request_changes")
+	err = db.MarkPRCompleted("owner", "repo", 1, "abc123", "review.html", 1, 2, 3, "request_changes", false)
 	require.NoError(t, err)
 
 	// The poller does a metadata refresh with a stale read still showing pending.
@@ -252,7 +252,7 @@ func TestGormDB_MarkPRCompleted_VerdictRoundTrip(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = db.MarkPRCompleted("owner", "repo", 2, "abc123", "review.html", 1, 0, 0, "request_changes")
+	err = db.MarkPRCompleted("owner", "repo", 2, "abc123", "review.html", 1, 0, 0, "request_changes", false)
 	require.NoError(t, err)
 
 	fetched, err := db.GetPR("owner", "repo", 2)
@@ -263,7 +263,7 @@ func TestGormDB_MarkPRCompleted_VerdictRoundTrip(t *testing.T) {
 
 	// Re-review of a new commit with no parseable verdict clears the field —
 	// a stale "request_changes" badge must not outlive the review it graded.
-	err = db.MarkPRCompleted("owner", "repo", 2, "def456", "review2.html", 0, 0, 0, "")
+	err = db.MarkPRCompleted("owner", "repo", 2, "def456", "review2.html", 0, 0, 0, "", false)
 	require.NoError(t, err)
 
 	fetched, err = db.GetPR("owner", "repo", 2)
@@ -1339,6 +1339,27 @@ func TestGormDB_EnsureManualPRView_CreatesAndResurfaces(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, prsWithViews, 1)
 	assert.False(t, prsWithViews[0].UserHidden, "re-request must clear user_hidden")
+}
+
+func TestGormDB_MarkPRCompleted_ModelFallbackFlag(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertPR(&PR{
+		RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		LastCommitSHA: "abc123", Status: "generating",
+	}))
+
+	require.NoError(t, db.MarkPRCompleted("owner", "repo", 1, "abc123", "r.html", 0, 0, 0, "", true))
+	pr, err := db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.True(t, pr.ModelFallback, "fallback flag must persist with the completed review")
+
+	// A later review on the right model clears it.
+	require.NoError(t, db.MarkPRCompleted("owner", "repo", 1, "def456", "r2.html", 0, 0, 0, "", false))
+	pr, err = db.GetPR("owner", "repo", 1)
+	require.NoError(t, err)
+	assert.False(t, pr.ModelFallback)
 }
 
 func TestGormDB_HideNonManualViewsForPR(t *testing.T) {

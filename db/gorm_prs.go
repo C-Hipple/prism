@@ -41,6 +41,7 @@ func prModelToPR(m *PRModel) *PR {
 		CIState:         m.CIState,
 		CIFailedChecks:  ciFailedChecks,
 		PRState:         m.PRState,
+		ModelFallback:   m.ModelFallback,
 		CriticalCount:   m.CriticalCount,
 		MediumCount:     m.MediumCount,
 		LowCount:        m.LowCount,
@@ -81,6 +82,7 @@ func prToPRModel(p *PR) *PRModel {
 		CIState:         p.CIState,
 		CIFailedChecks:  ciFailedChecks,
 		PRState:         p.PRState,
+		ModelFallback:   p.ModelFallback,
 		CriticalCount:   p.CriticalCount,
 		MediumCount:     p.MediumCount,
 		LowCount:        p.LowCount,
@@ -188,7 +190,7 @@ func (g *GormDB) BatchUpsertPRs(prs []*PR) error {
 // review's persisted location + importance counts + parsed verdict. Uses an
 // explicit UPDATE (not an upsert) so it can't be defeated by a concurrent
 // stale-read from the polling cycle.
-func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string) error {
+func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool) error {
 	now := time.Now().UTC()
 
 	// Diagnostic: read status before the UPDATE so we know what we were
@@ -207,6 +209,7 @@ func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, re
 			"medium_count":     medium,
 			"low_count":        low,
 			"review_verdict":   verdict,
+			"model_fallback":   modelFallback,
 			"error_message":    "",
 		})
 	if res.Error != nil {

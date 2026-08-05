@@ -244,6 +244,191 @@ func TestParseAgentStream_KillsOnScannerOverflow(t *testing.T) {
 	}
 }
 
+func TestParseAgentStream_CapturesServedModel(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-4-8"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"x"}]}}
+{"type":"result","result":"done"}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseAgentStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if len(res.servedModels) != 1 || res.servedModels[0] != "claude-opus-4-8" {
+		t.Errorf("servedModels: got %v want [claude-opus-4-8]", res.servedModels)
+	}
+}
+
+func TestParseAgentStream_IgnoresSyntheticModel(t *testing.T) {
+	stream := `{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"error"}]}}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"x"}]}}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseAgentStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if len(res.servedModels) != 1 || res.servedModels[0] != "claude-fable-5" {
+		t.Errorf("servedModels: got %v want [claude-fable-5] (synthetic must be skipped)", res.servedModels)
+	}
+}
+
+func TestParseAgentStream_RecordsMidRunModelSwitch(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","model":"claude-fable-5"}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"x"}]}}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"y"}]}}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseAgentStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if len(res.servedModels) != 2 || res.servedModels[0] != "claude-fable-5" || res.servedModels[1] != "claude-opus-4-8" {
+		t.Errorf("servedModels: got %v want [claude-fable-5 claude-opus-4-8]", res.servedModels)
+	}
+}
+
+func TestModelMatches(t *testing.T) {
+	cases := []struct {
+		requested, served string
+		want              bool
+	}{
+		{"claude-fable-5", "claude-fable-5", true},
+		{"claude-fable-5", "claude-fable-5-20260115", true},
+		{"claude-fable-5-20260115", "claude-fable-5", true},
+		{"opus", "claude-opus-4-8", true},
+		{"claude-fable-5", "claude-opus-4-8", false},
+		{"claude-opus-4-8", "claude-fable-5", false},
+		{"Claude-Fable-5", "claude-fable-5", true},
+	}
+	for _, c := range cases {
+		if got := modelMatches(c.requested, c.served); got != c.want {
+			t.Errorf("modelMatches(%q, %q) = %v, want %v", c.requested, c.served, got, c.want)
+		}
+	}
+}
+
+func TestRunAgentReview_DetectsModelFallback(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-4-8"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"x"}]}}
+{"type":"result","result":"[]"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+		Model:        "claude-fable-5",
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if !out.ModelFallback {
+		t.Error("expected ModelFallback=true for opus stream under a fable request")
+	}
+	if out.ServedModel != "claude-opus-4-8" || out.RequestedModel != "claude-fable-5" {
+		t.Errorf("model fields: served=%q requested=%q", out.ServedModel, out.RequestedModel)
+	}
+}
+
+func TestRunAgentReview_DetectsMidRunFallback(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	// Starts on the requested model, falls back partway through, then
+	// RECOVERS — the transient fallback must still be flagged.
+	stream := `{"type":"system","subtype":"init","model":"claude-fable-5"}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"x"}]}}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"y"}]}}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"z"}]}}
+{"type":"result","result":"[]"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+		Model:        "claude-fable-5",
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if !out.ModelFallback {
+		t.Error("expected ModelFallback=true for a mid-run switch to a non-matching model")
+	}
+	if out.ServedModel != "claude-opus-4-8" {
+		t.Errorf("ServedModel should name the fallback model, got %q", out.ServedModel)
+	}
+}
+
+func TestRunAgentReview_NoFallbackOnMatchingModel(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	stream := `{"type":"system","subtype":"init","model":"claude-fable-5"}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"x"}]}}
+{"type":"result","result":"[]"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+		Model:        "claude-fable-5",
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if out.ModelFallback {
+		t.Errorf("unexpected fallback: served=%q requested=%q", out.ServedModel, out.RequestedModel)
+	}
+}
+
 func TestRunAgentReview_FailureSurfacesStreamErrorAndPersistsLog(t *testing.T) {
 	bare, sha := setupLocalBareRepo(t)
 	cloneRoot := t.TempDir()

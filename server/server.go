@@ -114,6 +114,8 @@ type PRResponse struct {
 	// Overall AI review verdict parsed from the SUMMARY entry:
 	// "request_changes", "approve_suggestions", "approve", or "" (unknown)
 	ReviewVerdict string `json:"review_verdict"`
+	// Latest review ran on a fallback model, not the requested one
+	ModelFallback bool `json:"model_fallback"`
 	// User notes
 	Notes string `json:"notes"`
 	// User moved this PR to the collapsed Hidden section
@@ -408,6 +410,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			MediumCount:     dbPR.MediumCount,
 			LowCount:        dbPR.LowCount,
 			ReviewVerdict:   dbPR.ReviewVerdict,
+			ModelFallback:   dbPR.ModelFallback,
 			Notes:           notes,
 			Hidden:          prView.UserHidden,
 			ViaManual:       prView.ViaManual,
@@ -1629,6 +1632,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		MediumCount:     pr.MediumCount,
 		LowCount:        pr.LowCount,
 		ReviewVerdict:   pr.ReviewVerdict,
+		ModelFallback:   pr.ModelFallback,
 		Notes:           notes,
 		Hidden:          hidden,
 		ViaManual:       viaManual,
