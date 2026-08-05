@@ -744,7 +744,7 @@ func TestHandleGenerateReview_ClaimsPRForRequester(t *testing.T) {
 	requester := &db.User{GitHubID: 777, GitHubUsername: "requester"}
 	require.NoError(t, database.CreateUser(requester))
 
-	body := strings.NewReader(`{"owner":"owner","repo":"repo","number":42}`)
+	body := strings.NewReader(`{"owner":"owner","repo":"repo","number":42,"source":"form"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/prs/generate-review", body)
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, requester))
@@ -759,6 +759,38 @@ func TestHandleGenerateReview_ClaimsPRForRequester(t *testing.T) {
 	assert.Equal(t, 42, prs[0].PRNumber)
 	assert.True(t, prs[0].ViaManual, "requester's view must be marked via_manual")
 	assert.False(t, prs[0].IsAuthor, "requester is not the PR author")
+}
+
+// TestHandleGenerateReview_APICallDoesNotClaimPR: only the dashboard's paste
+// form (source=form) claims the PR into Requested by Me. Skill/API callers
+// authenticate as the same user but must stay off their dashboard.
+func TestHandleGenerateReview_APICallDoesNotClaimPR(t *testing.T) {
+	headSHA := "merged1234567890abcdef1234567890abcdef1234"
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"number":43,"title":"t","state":"closed","merged":true,"draft":false,"user":{"login":"someauthor"},"head":{"sha":"%s"}}`, headSHA)
+	}))
+	defer mockGH.Close()
+
+	ghClient := gh.NewTestClient(mockGH.URL, "testuser")
+	server, database := newTestServerWithGH(t, "testuser", ghClient)
+	defer database.Close()
+
+	requester := &db.User{GitHubID: 778, GitHubUsername: "requester"}
+	require.NoError(t, database.CreateUser(requester))
+
+	body := strings.NewReader(`{"owner":"owner","repo":"repo","number":43}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/prs/generate-review", body)
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, requester))
+	w := httptest.NewRecorder()
+
+	server.handleGenerateReview(w, req)
+	assert.Equal(t, http.StatusOK, w.Code, "the review itself must still run")
+
+	prs, err := database.GetPRsForUserWithNotes(requester.ID)
+	require.NoError(t, err)
+	assert.Len(t, prs, 0, "a source-less request must not claim the PR")
 }
 
 func TestHandleGenerateReview_MethodNotAllowed(t *testing.T) {
