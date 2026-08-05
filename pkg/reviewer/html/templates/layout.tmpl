@@ -349,11 +349,12 @@
             const counterDiv = comment.querySelector('.comment-counter');
             if (!counterDiv) return;
 
+            // No bare-counter fallback: writing textContent on the counter div
+            // would destroy the copy-link button inside it. The shared partial
+            // always emits the span; a missing one should fail visibly.
             const textEl = counterDiv.querySelector('.comment-counter-text');
             if (textEl) {
                 textEl.textContent = `Comment ${number} of ${totalComments}`;
-            } else {
-                counterDiv.textContent = `Comment ${number} of ${totalComments}`;
             }
 
             const linkBtn = counterDiv.querySelector('.comment-link-btn');
@@ -387,6 +388,7 @@
             document.body.appendChild(scratch);
             let ok = false;
             try {
+                scratch.focus({ preventScroll: true });
                 scratch.select();
                 ok = document.execCommand('copy');
             } catch (e) {
@@ -473,6 +475,7 @@
                                 : (currentCommentIndex - 1 + comments.length) % comments.length;
                         }
                         comments[currentCommentIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        highlightComment(currentCommentIndex);
                     }
                 }
             }
