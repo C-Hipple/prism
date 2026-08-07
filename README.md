@@ -75,6 +75,25 @@ The most common ones:
 
 See `.env.example` for the full reference, including agent tuning (`AGENT_*`), deterministic gates (`GATE_*`), bug memory, and feature flags.
 
+### Recommended configuration
+
+Gates and feature flags all default to off, and the defaults are deliberately conservative. For the strongest reviews, enable the deterministic layer and force the agent to answer it:
+
+```bash
+GATE_WIRING=true
+GATE_EFFECT_CLEANUP=true
+GATE_MIGRATION_RESIDUE=true
+GATE_TOPIC_BE_DIR=backend/           # adjust both to your repo layout
+GATE_TOPIC_FE_DIR=frontend/
+GATE_TASK_PRODUCER_GLOB=**/tasks.py
+REQUIRED_CHECKS=true
+BUG_MEMORY_OBJECT=bug-memory/bug-memory.json
+```
+
+The gates contribute mechanical findings from the diff with no LLM involved, and `REQUIRED_CHECKS=true` is what gives them teeth: each fired gate and bug-memory hit becomes a check the agent must explicitly answer with a VIOLATED / SAFE / NOT-APPLICABLE verdict instead of silently ignoring. The task gate needs only the producer glob; `GATE_TASK_CONSUMER_GLOB` is an optional narrowing. Bug memory pays off once you have a distilled library of past bugs to point it at; start one early.
+
+The remaining feature flags (`SURFACE_ALERTS`, `CARRY_FORWARD_FINDINGS`, `FINDING_OUTCOMES_ENABLED`, `REVIEW_HISTORY_ARCHIVE`) are dashboard and workflow conveniences. They are independent of review quality; enable them as needed.
+
 ## API
 
 - `GET /api/review/{owner}/{repo}/{pr}` — structured review JSON (`?format=html` / `?format=md` for rendered output, `?sha=` to pin a commit)
