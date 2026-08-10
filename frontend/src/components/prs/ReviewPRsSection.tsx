@@ -115,6 +115,10 @@ export function ReviewPRsSection({
   const applyTriage = (sectionPRs: PR[]): PR[] => {
     if (!triageFilter) return sectionPRs;
     return sectionPRs.filter((pr) => {
+      // Triage is a review-queue concern, so the user's own PRs are exempt
+      // wherever they appear — the same carve-out the fixed "My PRs" section
+      // used to get.
+      if (pr.is_mine) return true;
       // Only filter completed PRs by triage category
       if (pr.status !== 'completed') return true;
       return categorizePR(pr) === triageFilter;
@@ -125,12 +129,12 @@ export function ReviewPRsSection({
   const sectionPRs = sections.map((section) => {
     const matches = globallyFiltered.filter((pr) => prMatchesFilters(pr, section.filters, username));
     for (const pr of matches) matchedKeys.add(prKey(pr));
-    // Triage is a review-queue concern, so it leaves own-PR sections alone —
-    // the same carve-out the fixed "My PRs" section used to get.
-    return section.filters.authorship === 'mine' ? matches : applyTriage(matches);
+    return applyTriage(matches);
   });
 
-  const uncategorizedPRs = globallyFiltered.filter((pr) => !matchedKeys.has(prKey(pr)));
+  const uncategorizedPRs = applyTriage(
+    globallyFiltered.filter((pr) => !matchedKeys.has(prKey(pr)))
+  );
 
   const showSyncBanner = !isLoading && !error && allPRs.length === 0;
 

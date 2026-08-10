@@ -53,6 +53,9 @@ export function PRSection({
   // Dragging is suspended while the editor is open so text selection in its
   // inputs still works.
   const reorderable = customizing && !editing;
+  // Blank titles become "Untitled section" on reload (sanitizeSection), so
+  // show the same fallback live; the editor input keeps the raw value.
+  const displayTitle = section.title.trim() || 'Untitled section';
 
   return (
     <section
@@ -84,7 +87,7 @@ export function PRSection({
             type="button"
             className="pr-section__toggle"
             aria-expanded={expanded}
-            aria-label={`${expanded ? 'Collapse' : 'Expand'} ${section.title}`}
+            aria-label={`${expanded ? 'Collapse' : 'Expand'} ${displayTitle}`}
             onClick={onToggleCollapsed}
           >
             <span className="pr-section__chevron" aria-hidden="true">
@@ -92,7 +95,7 @@ export function PRSection({
             </span>
           </button>
           <span className="pr-section__title" data-testid="section-title">
-            {section.title} ({prs.length})
+            {displayTitle} ({prs.length})
           </span>
         </h2>
 
@@ -104,7 +107,7 @@ export function PRSection({
             <button
               type="button"
               className="column-toggle-btn"
-              aria-label={`Move ${section.title} up`}
+              aria-label={`Move ${displayTitle} up`}
               disabled={index === 0}
               onClick={() => onMove(index, index - 1)}
             >
@@ -113,7 +116,7 @@ export function PRSection({
             <button
               type="button"
               className="column-toggle-btn"
-              aria-label={`Move ${section.title} down`}
+              aria-label={`Move ${displayTitle} down`}
               disabled={index === sectionCount - 1}
               onClick={() => onMove(index, index + 1)}
             >
@@ -130,7 +133,7 @@ export function PRSection({
             <button
               type="button"
               className="column-toggle-btn"
-              aria-label={`Duplicate ${section.title}`}
+              aria-label={`Duplicate ${displayTitle}`}
               onClick={onDuplicate}
             >
               Duplicate
@@ -138,7 +141,7 @@ export function PRSection({
             <button
               type="button"
               className="column-toggle-btn"
-              aria-label={`Delete ${section.title}`}
+              aria-label={`Delete ${displayTitle}`}
               onClick={onRemove}
             >
               Delete

@@ -439,6 +439,44 @@ describe('ReviewPRsSection', () => {
       expect(readStoredConfig().showUncategorized).toBe(false);
     });
 
+    it('exempts own PRs from the triage filter in any-authorship sections', () => {
+      usePRsMock.mockReturnValue({
+        data: [
+          makePR({ number: 81, title: 'My finished PR', is_mine: true, status: 'completed' }),
+          makePR({ number: 82, title: 'Bob finished PR', author: 'bob', status: 'completed' }),
+          makePR({ number: 83, title: 'Bob pending PR', author: 'bob' }),
+        ],
+        isLoading: false,
+        error: null,
+      });
+      storeSections({
+        showUncategorized: false,
+        sections: [createSection('Everything', {})],
+      });
+
+      const { getByTestId } = render(<ReviewPRsSection triageFilter="critical" />);
+
+      expect(getByTestId('section-title').textContent).toBe('Everything (2)');
+      expect(getByTestId('pr-table-rows').textContent).toBe('My finished PR|Bob pending PR');
+    });
+
+    it('applies the triage filter to the Other PRs catch-all', () => {
+      usePRsMock.mockReturnValue({
+        data: [
+          makePR({ number: 91, title: 'Unmatched finished PR', author: 'bob', status: 'completed' }),
+          makePR({ number: 92, title: 'Unmatched pending PR', author: 'bob' }),
+        ],
+        isLoading: false,
+        error: null,
+      });
+      storeSections({ sections: [createSection('Platform queue', { teams: ['Platform'] })] });
+
+      const { getByTestId } = render(<ReviewPRsSection triageFilter="critical" />);
+
+      expect(sectionTitles()).toEqual(['Platform queue (0)', 'Other PRs (1)']);
+      expect(getByTestId('pr-table-rows').textContent).toBe('Unmatched pending PR');
+    });
+
     it('reorders sections and saves the new order immediately', () => {
       usePRsMock.mockReturnValue({ data: teamPRs(), isLoading: false, error: null });
       storeSections({

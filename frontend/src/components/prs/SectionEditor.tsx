@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import type { PRStateFilter } from '@/hooks/useUrlFilters';
 import type { SectionAuthorship, SectionConfig, SectionFilters } from '@/types/sections';
 import { createEmptyFilters } from '@/utils/sectionConfig';
@@ -42,13 +43,16 @@ function ChipList<T extends string>({
   emptyHint,
   onToggle,
 }: ChipListProps<T>) {
+  const labelId = useId();
   return (
     <div className="section-editor__row">
-      <span className="section-editor__label">{label}</span>
+      <span className="section-editor__label" id={labelId}>
+        {label}
+      </span>
       {options.length === 0 ? (
         <span className="section-editor__hint">{emptyHint}</span>
       ) : (
-        <div className="section-editor__chips">
+        <div className="section-editor__chips" role="group" aria-labelledby={labelId}>
           {options.map(({ value, label: optionLabel }) => {
             const active = selected.includes(value);
             return (
@@ -84,6 +88,7 @@ export function SectionEditor({
   onDone,
 }: SectionEditorProps) {
   const { filters } = section;
+  const authorshipLabelId = useId();
   const patch = (changes: Partial<SectionFilters>) =>
     onFiltersChange({ ...filters, ...changes });
 
@@ -110,8 +115,10 @@ export function SectionEditor({
       </div>
 
       <div className="section-editor__row">
-        <span className="section-editor__label">Author is</span>
-        <div className="section-editor__chips">
+        <span className="section-editor__label" id={authorshipLabelId}>
+          Author is
+        </span>
+        <div className="section-editor__chips" role="group" aria-labelledby={authorshipLabelId}>
           {AUTHORSHIP_OPTIONS.map(({ value, label }) => (
             <button
               key={value}
