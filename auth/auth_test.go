@@ -123,7 +123,7 @@ func (m *MockDatabase) SetPRAgentReviewing(owner, repo string, prNumber int) err
 func (m *MockDatabase) SetPRError(owner, repo string, prNumber int, message string) error {
 	return nil
 }
-func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string) error {
+func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool) error {
 	return nil
 }
 func (m *MockDatabase) GetAllPRs() ([]db.PR, error)                             { return nil, nil }
@@ -172,8 +172,14 @@ func (m *MockDatabase) DeleteAllUserPRViews(userID int) (int64, error)          
 func (m *MockDatabase) HidePRForUser(userID, prID int) error                         { return nil }
 func (m *MockDatabase) SetUserHiddenForPR(userID, prID int, hidden bool) error       { return nil }
 func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error       { return nil }
-func (m *MockDatabase) BatchUpsertPRs(prs []*db.PR) error                            { return nil }
-func (m *MockDatabase) BatchUpsertUserPRViews(views []db.UserPRViewBatchItem) error  { return nil }
+func (m *MockDatabase) EnsureManualPRView(userID, prID int, isAuthor bool) error     { return nil }
+func (m *MockDatabase) GetPRIDsWithManualClaims() (map[int]bool, error)              { return nil, nil }
+func (m *MockDatabase) HideNonManualViewsForPR(prID int) error                       { return nil }
+func (m *MockDatabase) SetPRState(owner, repo string, prNumber int, state string) error {
+	return nil
+}
+func (m *MockDatabase) BatchUpsertPRs(prs []*db.PR) error                           { return nil }
+func (m *MockDatabase) BatchUpsertUserPRViews(views []db.UserPRViewBatchItem) error { return nil }
 func (m *MockDatabase) GetUserPRViewsWithViaTeams(prIDs []int) ([]db.UserPRView, error) {
 	return nil, nil
 }

@@ -131,6 +131,15 @@ func (g *GormDB) ensureIdempotentColumns() error {
 	if err := g.db.Exec("ALTER TABLE user_pr_views ADD COLUMN IF NOT EXISTS user_hidden boolean NOT NULL DEFAULT false").Error; err != nil {
 		return fmt.Errorf("add user_hidden: %w", err)
 	}
+	if err := g.db.Exec("ALTER TABLE user_pr_views ADD COLUMN IF NOT EXISTS via_manual boolean NOT NULL DEFAULT false").Error; err != nil {
+		return fmt.Errorf("add via_manual: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS pr_state varchar(16) NOT NULL DEFAULT 'open'").Error; err != nil {
+		return fmt.Errorf("add pr_state: %w", err)
+	}
+	if err := g.db.Exec("ALTER TABLE prs ADD COLUMN IF NOT EXISTS model_fallback boolean NOT NULL DEFAULT false").Error; err != nil {
+		return fmt.Errorf("add model_fallback: %w", err)
+	}
 	return nil
 }
 

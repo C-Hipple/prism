@@ -31,6 +31,7 @@ func userPRViewModelToUserPRAssignment(m *UserPRViewModel) *UserPRAssignment {
 		MyReviewStatus: m.ReviewStatus,
 		Notes:          m.Notes,
 		UserHidden:     m.UserHidden,
+		ViaManual:      m.ViaManual,
 	}
 }
 
@@ -45,9 +46,10 @@ func userPRAssignmentToUserPRViewModel(a *UserPRAssignment) *UserPRViewModel {
 		_ = json.Unmarshal([]byte(a.ReviewerGroups), &viaTeams)
 	}
 
-	// UserHidden is intentionally NOT mapped back: this conversion feeds
-	// UpsertUserPRAssignment, and user_hidden must only ever be written by
-	// SetUserHiddenForPR — never by an upsert or poller path.
+	// UserHidden and ViaManual are intentionally NOT mapped back: this
+	// conversion feeds UpsertUserPRAssignment, and those columns must only
+	// ever be written by SetUserHiddenForPR / EnsureManualPRView — never by
+	// an upsert or poller path.
 	return &UserPRViewModel{
 		ID:           uint(a.ID),
 		UserID:       uint(a.UserID),
@@ -319,6 +321,7 @@ func (g *GormDB) GetUserPRViewsWithViaTeams(prIDs []int) ([]UserPRView, error) {
 			Notes:        m.Notes,
 			Hidden:       m.Hidden,
 			UserHidden:   m.UserHidden,
+			ViaManual:    m.ViaManual,
 		}
 	}
 	return views, nil
@@ -402,6 +405,54 @@ func (g *GormDB) EnsureUserPRView(userID, prID int, isAuthor bool) error {
 	}).Create(view).Error
 }
 
+// EnsureManualPRView records that the user manually requested a review for
+// this PR: creates the view row if missing, else sets via_manual=true and
+// clears both hidden flags — a paste-a-URL request is explicit, so it fully
+// resurfaces a previously deleted or user-hidden entry. Notes and via_teams
+// are preserved.
+func (g *GormDB) EnsureManualPRView(userID, prID int, isAuthor bool) error {
+	view := &UserPRViewModel{
+		UserID:    uint(userID),
+		PRID:      uint(prID),
+		IsAuthor:  isAuthor,
+		ViaManual: true,
+	}
+
+	return g.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}, {Name: "pr_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"via_manual", "hidden", "user_hidden"}),
+	}).Create(view).Error
+}
+
+// HideNonManualViewsForPR soft-hides every view of a PR except live manual
+// claims. Used when closed-PR cleanup retains a PR for its manual claimants:
+// everyone else's dashboard should behave as if the row had been cleaned up.
+func (g *GormDB) HideNonManualViewsForPR(prID int) error {
+	return g.db.Model(&UserPRViewModel{}).
+		Where("pr_id = ? AND via_manual = ? AND hidden = ?", prID, false, false).
+		Update("hidden", true).Error
+}
+
+// GetPRIDsWithManualClaims returns the set of pr_ids that at least one user
+// manually requested and has not since deleted (via_manual=true, hidden=false).
+// The closed-PR cleanup skips these so a manually requested review stays on
+// the requester's dashboard until they delete it.
+func (g *GormDB) GetPRIDsWithManualClaims() (map[int]bool, error) {
+	var prIDs []int
+	err := g.db.Model(&UserPRViewModel{}).
+		Where("via_manual = ? AND hidden = ?", true, false).
+		Distinct().
+		Pluck("pr_id", &prIDs).Error
+	if err != nil {
+		return nil, err
+	}
+	claims := make(map[int]bool, len(prIDs))
+	for _, id := range prIDs {
+		claims[id] = true
+	}
+	return claims, nil
+}
+
 // GetPRsForUserWithNotes returns all PRs for a user, with user-specific view data merged
 func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 	var results []struct {
@@ -412,6 +463,7 @@ func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 		ReviewStatus string          `gorm:"column:review_status"`
 		ViaTeams     JSONStringArray `gorm:"column:via_teams"`
 		UserHidden   bool            `gorm:"column:user_hidden"`
+		ViaManual    bool            `gorm:"column:via_manual"`
 	}
 
 	err := g.db.Table("prs").
@@ -421,7 +473,8 @@ func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 			user_pr_views.notes as user_notes,
 			user_pr_views.review_status,
 			user_pr_views.via_teams,
-			user_pr_views.user_hidden`).
+			user_pr_views.user_hidden,
+			user_pr_views.via_manual`).
 		Joins("INNER JOIN user_pr_views ON prs.id = user_pr_views.pr_id").
 		Where("user_pr_views.user_id = ?", userID).
 		Where("user_pr_views.hidden = ?", false).
@@ -452,6 +505,7 @@ func (g *GormDB) GetPRsForUserWithNotes(userID int) ([]PRWithUserView, error) {
 			ReviewStatus: r.ReviewStatus,
 			ViaTeams:     r.ViaTeams,
 			UserHidden:   r.UserHidden,
+			ViaManual:    r.ViaManual,
 		}
 	}
 

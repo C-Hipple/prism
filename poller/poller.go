@@ -267,6 +267,67 @@ func (p *Poller) loadBugMemory() {
 // Tests inject a stub to avoid actually invoking the claude CLI.
 func (p *Poller) SetAgentSpawner(s service.Spawner) { p.agentSpawner = s }
 
+// persistAgentFailureLog uploads a failed agent run's raw stream-json log to
+// GCS under agent-logs/ — the only durable record of what the claude CLI
+// reported. Best-effort: an upload failure must never mask the review error.
+func (p *Poller) persistAgentFailureLog(logPath string) {
+	if p.gcsClient == nil {
+		return
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		log.Printf("[AGENT] WARN: read failure log %s: %v", logPath, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	objectName := "agent-logs/" + filepath.Base(logPath)
+	if err := p.gcsClient.UploadReviewSidecar(ctx, objectName, "application/x-ndjson", data); err != nil {
+		log.Printf("[AGENT] WARN: persist failure log to gs://%s/%s: %v", p.gcsClient.BucketName(), objectName, err)
+		return
+	}
+	log.Printf("[AGENT] persisted failure log: gs://%s/%s (%d bytes)", p.gcsClient.BucketName(), objectName, len(data))
+}
+
+// systemTelemetryUser is the reserved user that owns server-emitted
+// telemetry events (telemetry_events.user_id is NOT NULL with an FK).
+// The underscore makes it structurally invalid as a GitHub username, so a
+// real login can never collide with (and out-sort) the system user in
+// GetUserByUsername.
+const systemTelemetryUser = "prism_system"
+
+// recordModelFallback writes an agent_model_fallback telemetry event so
+// fallback frequency is queryable from the telemetry dashboard alongside
+// user events. Events are attributed to the reserved user named by
+// systemTelemetryUser (telemetry_events.user_id is NOT NULL with an FK).
+// Best-effort.
+func (p *Poller) recordModelFallback(pr github.PullRequest, requested, served string) {
+	user, err := p.db.GetUserByUsername(systemTelemetryUser)
+	if err == nil && user == nil {
+		user = &db.User{GitHubID: -1, GitHubUsername: systemTelemetryUser}
+		if err = p.db.CreateUser(user); err != nil {
+			// Concurrent fallbacks can race the first create (github_id is
+			// unique); the loser re-fetches the row the winner made.
+			user, err = p.db.GetUserByUsername(systemTelemetryUser)
+		}
+	}
+	if err != nil || user == nil {
+		log.Printf("[REVIEWER] WARN: could not resolve %s user for fallback telemetry: %v", systemTelemetryUser, err)
+		return
+	}
+	event := db.TelemetryEvent{
+		UserID:   user.ID,
+		Action:   "agent_model_fallback",
+		Label:    fmt.Sprintf("requested=%s served=%s", requested, served),
+		PROwner:  pr.Owner,
+		PRRepo:   pr.Repo,
+		PRNumber: pr.Number,
+	}
+	if err := p.db.CreateTelemetryEvents([]db.TelemetryEvent{event}); err != nil {
+		log.Printf("[REVIEWER] WARN: could not record fallback telemetry: %v", err)
+	}
+}
+
 // isReviewInFlight reports whether a PR's status indicates an in-progress
 // review (Gemini "generating" or Claude "agent_reviewing"). Used by the
 // outdated-detection paths to decide whether to cancel the active review.
@@ -321,6 +382,7 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		Effort:         p.cfg.AgentEffort,
 		BugMemory:      p.bugMemory,
 		RequiredChecks: p.cfg.RequiredChecks,
+		FailureLogSink: p.persistAgentFailureLog,
 	}
 	// Pass the PR's true base branch so the clone and the deterministic-layer
 	// diff (gates, bug memory, required checks) are computed against it. With
@@ -332,6 +394,12 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 	if agentErr != nil {
 		log.Printf("[REVIEWER] ERROR: agent review failed for PR %d: %v", pr.Number, agentErr)
 		return nil, fmt.Errorf("agent review: %w", agentErr)
+	}
+
+	if agentOut.ModelFallback {
+		log.Printf("[REVIEWER] ERROR: MODEL FALLBACK for %s/%s#%d: requested=%s served=%s — review published with fallback badge",
+			pr.Owner, pr.Repo, pr.Number, agentOut.RequestedModel, agentOut.ServedModel)
+		p.recordModelFallback(pr, agentOut.RequestedModel, agentOut.ServedModel)
 	}
 
 	// Reconcile instead of replace: the agent's output used to fully overwrite
@@ -404,6 +472,7 @@ func (p *Poller) runAgentStage(ctx context.Context, pr github.PullRequest, resul
 		FileContents:  result.FileContents,
 		BugMemory:     agentOut.BugMemory,
 		Checks:        agentOut.Checks,
+		ModelFallback: agentOut.ModelFallback,
 		// Copied (not aliased) so the no-swallow check reads the pre-merge
 		// alert set even if a later stage mutates the agent output.
 		GateAlerts: append(append([]types.LineComment{}, agentOut.Gates...), agentOut.CheckFindings...),
@@ -1060,12 +1129,51 @@ func (p *Poller) startPoll(ctx context.Context, trigger string) {
 	}()
 }
 
+// manualClaimPRIDs returns the set of PR ids exempt from closed-PR cleanup
+// because a user manually requested them and hasn't deleted them. ok=false
+// means the claims are unknown (DB error) — callers must skip deletion for
+// the cycle rather than delete a row a user asked to keep.
+func (p *Poller) manualClaimPRIDs() (map[int]bool, bool) {
+	claims, err := p.db.GetPRIDsWithManualClaims()
+	if err != nil {
+		log.Printf("[CLEANUP] ERROR: could not load manual claims, skipping closed-PR cleanup this cycle: %v", err)
+		return nil, false
+	}
+	return claims, true
+}
+
+// retainForManualClaim handles a closed PR kept alive by a manual claim:
+// non-claimants' views are soft-hidden so their dashboards behave as if the
+// row had been cleaned up (they get no pr_deleted broadcast; the row drops
+// out on their next fetch), and the PR's GitHub state is persisted so the
+// dashboard can render it as merged/closed. Best-effort — the retained row
+// is re-processed every cycle, so failed writes self-heal.
+func (p *Poller) retainForManualClaim(pr db.PR, state string) {
+	key := fmt.Sprintf("%s/%s#%d", pr.RepoOwner, pr.RepoName, pr.PRNumber)
+	log.Printf("[CLEANUP] PR %s is closed but manually requested — keeping until the requester deletes it", key)
+	if err := p.db.HideNonManualViewsForPR(pr.ID); err != nil {
+		log.Printf("[CLEANUP] WARN: could not hide non-manual views for retained PR %s: %v", key, err)
+	}
+	if state = strings.ToLower(state); state != "" && state != pr.PRState {
+		if err := p.db.SetPRState(pr.RepoOwner, pr.RepoName, pr.PRNumber, state); err != nil {
+			log.Printf("[CLEANUP] WARN: could not persist state %q for retained PR %s: %v", state, key, err)
+		} else {
+			p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+		}
+	}
+}
+
 // cleanupClosedPRs removes PRs from the database and filesystem if they're closed on GitHub
 func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 	// Get all PRs from database
 	allPRs, err := p.db.GetAllPRs()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get PRs from database: %w", err)
+	}
+
+	manualClaims, claimsOK := p.manualClaimPRIDs()
+	if !claimsOK {
+		return 0, fmt.Errorf("skipping closed-PR cleanup: manual claims unavailable")
 	}
 
 	removed := 0
@@ -1077,6 +1185,13 @@ func (p *Poller) cleanupClosedPRs(ctx context.Context) (int, error) {
 			// Log but continue - we'll handle it on next poll
 			log.Printf("[CLEANUP] Warning: Could not check status of PR %s/%s#%d: %v",
 				pr.RepoOwner, pr.RepoName, pr.PRNumber, err)
+			continue
+		}
+
+		if !isOpen && manualClaims[pr.ID] {
+			// IsPROpen can't distinguish merged from closed — leave the state
+			// to the batched cleanup path (cleanupAndDetectOutdated).
+			p.retainForManualClaim(pr, "")
 			continue
 		}
 
@@ -1139,6 +1254,8 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 		return 0, 0, fmt.Errorf("failed to batch-fetch PR state: %w", err)
 	}
 
+	manualClaims, claimsOK := p.manualClaimPRIDs()
+
 	// Single pass: handle closed PRs and outdated reviews
 	for _, pr := range allPRs {
 		key := fmt.Sprintf("%s/%s/%d", pr.RepoOwner, pr.RepoName, pr.PRNumber)
@@ -1150,6 +1267,12 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 
 		// --- Closed PR cleanup ---
 		if state.State != "OPEN" {
+			if !claimsOK || manualClaims[pr.ID] {
+				if claimsOK {
+					p.retainForManualClaim(pr, state.State)
+				}
+				continue
+			}
 			log.Printf("[CLEANUP] PR %s is %s, removing from tracking (reviews kept in GCS)", key, state.State)
 			if err := p.db.DeletePR(pr.RepoOwner, pr.RepoName, pr.PRNumber); err != nil {
 				log.Printf("[CLEANUP] ERROR: Failed to delete PR %s: %v", key, err)
@@ -1165,6 +1288,19 @@ func (p *Poller) cleanupAndDetectOutdated(ctx context.Context) (removed int, out
 			log.Printf("[CLEANUP] Successfully removed closed PR %s", key)
 			removed++
 			continue
+		}
+
+		// --- PR-state sync (re-opened retained PRs) ---
+		// A PR retained past close (manual claim) had pr_state persisted as
+		// closed/merged; if it's re-opened on GitHub, restore it or the UI
+		// keeps showing the merged/closed dot instead of live CI.
+		if pr.PRState != "" && pr.PRState != "open" {
+			log.Printf("[STATE-SYNC] PR %s re-opened on GitHub, restoring pr_state to open", key)
+			if err := p.db.SetPRState(pr.RepoOwner, pr.RepoName, pr.PRNumber, "open"); err != nil {
+				log.Printf("[STATE-SYNC] ERROR: failed to restore state for PR %s: %v", key, err)
+			} else {
+				p.broadcastPRUpdate(pr.RepoOwner, pr.RepoName, pr.PRNumber)
+			}
 		}
 
 		// --- Draft-state sync ---
@@ -2426,14 +2562,15 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				filename := gcs.ReviewFileName(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA)
 				// Get existing importance counts + verdict from database
 				existingPR, _ := p.db.GetPR(pr.Owner, pr.Repo, pr.Number)
-				criticalCount, mediumCount, lowCount, verdict := 0, 0, 0, ""
+				criticalCount, mediumCount, lowCount, verdict, modelFallback := 0, 0, 0, "", false
 				if existingPR != nil {
 					criticalCount = existingPR.CriticalCount
 					mediumCount = existingPR.MediumCount
 					lowCount = existingPR.LowCount
 					verdict = existingPR.ReviewVerdict
+					modelFallback = existingPR.ModelFallback
 				}
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict); err != nil {
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, criticalCount, mediumCount, lowCount, verdict, modelFallback); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for existing review: %v", err)
 				} else {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)
@@ -2576,7 +2713,7 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 				// (unknown) when the mock generator supplies no comments or
 				// the SUMMARY has no recognizable verdict phrasing.
 				verdict := service.VerdictFromComments(reviewResult.Comments)
-				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict); err != nil {
+				if err := p.db.MarkPRCompleted(pr.Owner, pr.Repo, pr.Number, pr.CommitSHA, filename, reviewResult.CriticalCount, reviewResult.MediumCount, reviewResult.LowCount, verdict, reviewResult.ModelFallback); err != nil {
 					log.Printf("[REVIEWER] ERROR: Failed to update DB for PR %d: %v", pr.Number, err)
 				} else {
 					p.broadcastPRUpdate(pr.Owner, pr.Repo, pr.Number)

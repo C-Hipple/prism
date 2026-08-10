@@ -231,6 +231,147 @@ func TestCleanupClosedPRs_RemovesClosedPRs(t *testing.T) {
 	}
 }
 
+func TestCleanupClosedPRs_KeepsManuallyRequestedClosedPRs(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+
+	// Both PRs are closed; PR 1 has a live manual claim, PR 2 does not.
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "owner", RepoName: "repo", PRNumber: 1, Status: "completed",
+	}
+	mockDB.PRs["owner/repo/2"] = &db.PR{
+		ID: 22, RepoOwner: "owner", RepoName: "repo", PRNumber: 2, Status: "completed",
+	}
+	mockDB.ManualClaimPRIDs = []int{11}
+	mockGH.IsPROpenResults["owner/repo/1"] = struct {
+		IsOpen bool
+		Err    error
+	}{false, nil}
+	mockGH.IsPROpenResults["owner/repo/2"] = struct {
+		IsOpen bool
+		Err    error
+	}{false, nil}
+
+	poller := newTestPoller(mockGH, mockDB)
+
+	removed, err := poller.cleanupClosedPRs(context.Background())
+	if err != nil {
+		t.Fatalf("cleanupClosedPRs returned error: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("expected 1 PR removed, got %d", removed)
+	}
+	if _, exists := mockDB.PRs["owner/repo/1"]; !exists {
+		t.Error("PR 1 should be kept: closed but manually requested")
+	}
+	if _, exists := mockDB.PRs["owner/repo/2"]; exists {
+		t.Error("PR 2 should have been deleted (closed, no manual claim)")
+	}
+	if len(mockDB.HideNonManualViewsCalls) != 1 || mockDB.HideNonManualViewsCalls[0] != 11 {
+		t.Errorf("expected non-manual views of retained PR 11 to be hidden, calls: %v", mockDB.HideNonManualViewsCalls)
+	}
+}
+
+func TestCleanupAndDetectOutdated_PersistsStateOfRetainedPR(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		Status: "completed", LastCommitSHA: "abc", PRState: "open",
+	}
+	mockDB.ManualClaimPRIDs = []int{11}
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"owner/repo/1": {Owner: "owner", Repo: "repo", Number: 1, State: "MERGED", HeadRefOid: "abc"},
+	}
+
+	poller := newTestPoller(mockGH, mockDB)
+
+	removed, _, err := poller.cleanupAndDetectOutdated(context.Background())
+	if err != nil {
+		t.Fatalf("cleanupAndDetectOutdated returned error: %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("expected 0 removed, got %d", removed)
+	}
+	pr, exists := mockDB.PRs["owner/repo/1"]
+	if !exists {
+		t.Fatal("manually claimed merged PR must be retained")
+	}
+	if pr.PRState != "merged" {
+		t.Errorf("expected retained PR state to be persisted as merged, got %q", pr.PRState)
+	}
+}
+
+func TestRecordModelFallback_CreatesSystemUserAndEvent(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	poller := newTestPoller(mockGH, mockDB)
+
+	pr := github.PullRequest{Owner: "owner", Repo: "repo", Number: 7}
+	poller.recordModelFallback(pr, "claude-fable-5", "claude-opus-4-8")
+	poller.recordModelFallback(pr, "claude-fable-5", "claude-opus-4-8")
+
+	if len(mockDB.TelemetryEvents) != 2 {
+		t.Fatalf("expected 2 telemetry events, got %d", len(mockDB.TelemetryEvents))
+	}
+	ev := mockDB.TelemetryEvents[0]
+	if ev.Action != "agent_model_fallback" {
+		t.Errorf("action: got %q", ev.Action)
+	}
+	if ev.Label != "requested=claude-fable-5 served=claude-opus-4-8" {
+		t.Errorf("label: got %q", ev.Label)
+	}
+	if ev.PROwner != "owner" || ev.PRRepo != "repo" || ev.PRNumber != 7 {
+		t.Errorf("PR attribution: %+v", ev)
+	}
+	if ev.UserID == 0 {
+		t.Error("event must be attributed to the system user, not user 0")
+	}
+	if len(mockDB.Users) != 1 {
+		t.Errorf("system user should be created once and reused, got %d users", len(mockDB.Users))
+	}
+}
+
+func TestRecordModelFallback_SurvivesCreateUserRace(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+	mockDB.CreateUserErr = errors.New("duplicate key value violates unique constraint")
+	poller := newTestPoller(mockGH, mockDB)
+
+	poller.recordModelFallback(github.PullRequest{Owner: "owner", Repo: "repo", Number: 7},
+		"claude-fable-5", "claude-opus-4-8")
+
+	if len(mockDB.TelemetryEvents) != 1 {
+		t.Fatalf("losing the create race must not drop the event, got %d events", len(mockDB.TelemetryEvents))
+	}
+	if mockDB.TelemetryEvents[0].UserID == 0 {
+		t.Error("event must be attributed to the re-fetched system user")
+	}
+}
+
+func TestCleanupAndDetectOutdated_RestoresStateOfReopenedPR(t *testing.T) {
+	mockGH := NewMockGitHubClient()
+	mockDB := NewMockDatabase()
+
+	mockDB.PRs["owner/repo/1"] = &db.PR{
+		ID: 11, RepoOwner: "owner", RepoName: "repo", PRNumber: 1,
+		Status: "completed", LastCommitSHA: "abc", PRState: "closed",
+	}
+	mockGH.BatchGetPRStateResults = map[string]*github.PRState{
+		"owner/repo/1": {Owner: "owner", Repo: "repo", Number: 1, State: "OPEN", HeadRefOid: "abc"},
+	}
+
+	poller := newTestPoller(mockGH, mockDB)
+
+	if _, _, err := poller.cleanupAndDetectOutdated(context.Background()); err != nil {
+		t.Fatalf("cleanupAndDetectOutdated returned error: %v", err)
+	}
+	if got := mockDB.PRs["owner/repo/1"].PRState; got != "open" {
+		t.Errorf("expected re-opened PR state restored to open, got %q", got)
+	}
+}
+
 func TestCleanupClosedPRs_KeepsOpenPRs(t *testing.T) {
 	mockGH := NewMockGitHubClient()
 	mockDB := NewMockDatabase()

@@ -26,9 +26,7 @@
         <h2>Review Summary</h2>
         {{range .SummaryComments}}
         <div class="summary-comment">
-            <div class="comment-counter">
-                Comment {{.Counter}} of {{.Total}}
-            </div>
+            {{template "comment-counter" .}}
             <div class="summary-body">
                 {{.CommentBody | markdownify}}
             </div>
@@ -42,9 +40,7 @@
         <h2>General Comments</h2>
         {{range .GeneralComments}}
         <div class="general-comment">
-            <div class="comment-counter">
-                Comment {{.Counter}} of {{.Total}}
-            </div>
+            {{template "comment-counter" .}}
             <div class="general-body">
                 {{.CommentBody | markdownify}}
             </div>
@@ -79,9 +75,7 @@
                     <div class="line-num"></div><div class="line-num"></div>
                     <div class="comment-cell">
                         <div class="comment-body">
-                            <div class="comment-counter">
-                                Comment {{.Counter}} of {{.Total}}
-                            </div>
+                            {{template "comment-counter" .}}
                             {{.CommentBody | markdownify}}
                         </div>
                     </div>

@@ -13,9 +13,7 @@
             <div class="comment-cell">
                 {{range $fileComments}}
                 <div class="comment-body">
-                    <div class="comment-counter">
-                        Comment {{.Counter}} of {{.Total}}
-                    </div>
+                    {{template "comment-counter" .}}
                     {{.CommentBody | markdownify}}
                 </div>
                 {{end}}
@@ -36,9 +34,7 @@
             <div class="comment-cell">
                 {{range $comments}}
                 <div class="comment-body">
-                    <div class="comment-counter">
-                        Comment {{.Counter}} of {{.Total}}
-                    </div>
+                    {{template "comment-counter" .}}
                     {{.CommentBody | markdownify}}
                 </div>
                 {{end}}

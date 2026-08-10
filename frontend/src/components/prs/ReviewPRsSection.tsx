@@ -46,9 +46,13 @@ export function ReviewPRsSection({
     resetSections,
   } = useSectionsConfig();
 
-  // Collapse state for the Hidden section is deliberately client-side only
-  // (per issue #30); hidden membership itself is server-persisted per user.
+  // Collapse state for the two built-in sections is deliberately client-side
+  // only (per issue #30); hidden membership itself is server-persisted per
+  // user. Requested starts open (it's the section the user explicitly
+  // populated), Hidden starts closed. Configured sections persist their own
+  // collapse state alongside the rest of their config.
   const [hiddenExpanded, setHiddenExpanded] = useState(false);
+  const [requestedExpanded, setRequestedExpanded] = useState(true);
   const [customizing, setCustomizing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -78,8 +82,12 @@ export function ReviewPRsSection({
     [allPRs]
   );
 
+  // The two built-in sections keep their fixed membership: hidden > via_manual
+  // wins over anything the user configures, so a manually requested PR still
+  // lands in exactly one place and hidden rows stay out of the way.
   const visiblePRs = allPRs.filter((pr) => !pr.hidden);
   const hasHiddenPRs = allPRs.length > visiblePRs.length;
+  const hasRequestedPRs = visiblePRs.some((pr) => pr.via_manual);
 
   // The filter bar's criteria apply on top of every section's own filters.
   const globalCriteria = {
@@ -88,7 +96,16 @@ export function ReviewPRsSection({
     repos: selectedRepos,
     states: selectedStates,
   };
-  const globallyFiltered = filterAndSortPRs(visiblePRs, globalCriteria, username);
+  const globallyFiltered = filterAndSortPRs(
+    visiblePRs.filter((pr) => !pr.via_manual),
+    globalCriteria,
+    username
+  );
+  const requestedPRs = filterAndSortPRs(
+    visiblePRs.filter((pr) => pr.via_manual),
+    globalCriteria,
+    username
+  );
   const hiddenPRs = filterAndSortPRs(
     allPRs.filter((pr) => pr.hidden),
     globalCriteria,
@@ -188,6 +205,39 @@ export function ReviewPRsSection({
 
       {isLoading && <LoadingSpinner />}
       {error && <ErrorMessage message={`Error loading PRs: ${error.message}`} />}
+
+      {/* Requested by Me Section — PRs the user manually requested a review
+          for (paste-a-URL form / API). Rendered only when non-empty; deleting
+          an entry removes it and the section disappears with its last row.
+          It sits outside the configurable sections on purpose: these rows are
+          an explicit user action, not something to filter into a queue. */}
+      {hasRequestedPRs && (
+        <section className="review-prs__requested-section">
+          <div className="section-header">
+            <h2>
+              <button
+                type="button"
+                className="hidden-section__toggle"
+                aria-expanded={requestedExpanded}
+                onClick={() => setRequestedExpanded(v => !v)}
+              >
+                <span className="hidden-section__chevron" aria-hidden="true">
+                  {requestedExpanded ? '▾' : '▸'}
+                </span>
+                Requested by Me ({requestedPRs.length})
+              </button>
+            </h2>
+          </div>
+          {requestedExpanded && requestedPRs.length === 0 && (
+            <p className="review-prs__empty-state">
+              No matching requested PRs
+            </p>
+          )}
+          {requestedExpanded && requestedPRs.length > 0 && (
+            <PRTable prs={requestedPRs} showViaTeams={false} />
+          )}
+        </section>
+      )}
 
       {sections.map((section, index) => (
         <PRSection

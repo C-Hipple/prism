@@ -3,9 +3,23 @@ import { memo } from 'react';
 interface CIStatusIndicatorProps {
   state: 'success' | 'failure' | 'pending' | 'unknown';
   failedChecks: string[];
+  // GitHub PR state; 'merged'/'closed' replace the CI dot, whose last-known
+  // state is stale and meaningless once the PR is no longer open.
+  prState?: 'open' | 'closed' | 'merged';
 }
 
-export const CIStatusIndicator = memo(function CIStatusIndicator({ state, failedChecks }: CIStatusIndicatorProps) {
+export const CIStatusIndicator = memo(function CIStatusIndicator({ state, failedChecks, prState }: CIStatusIndicatorProps) {
+  if (prState === 'merged' || prState === 'closed') {
+    return (
+      <span
+        className={`ci-status ci-status--${prState}`}
+        title={prState === 'merged' ? 'PR merged' : 'PR closed without merging'}
+      >
+        ●
+      </span>
+    );
+  }
+
   const getIcon = () => {
     switch (state) {
       case 'success':

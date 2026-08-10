@@ -264,6 +264,83 @@ describe('ReviewPRsSection', () => {
     expect(getAllByTestId('pr-table-rows')).toHaveLength(1);
   });
 
+  it('renders no Requested by Me section when the user has no manual requests', () => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    usePRsMock.mockReturnValue({
+      data: [makePR({ number: 61, title: 'Team-assigned PR' })],
+      isLoading: false,
+      error: null,
+    });
+
+    const { queryByText } = render(<ReviewPRsSection />);
+    expect(queryByText(/^Requested by Me \(/)).toBeNull();
+  });
+
+  it('puts manually requested PRs in a top section and out of the other tables', () => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    usePRsMock.mockReturnValue({
+      data: [
+        makePR({ number: 71, title: 'Requested merged PR', via_manual: true }),
+        makePR({ number: 72, title: 'Requested own PR', via_manual: true, is_mine: true }),
+        makePR({ number: 73, title: 'My normal PR', is_mine: true }),
+        makePR({ number: 74, title: 'Review PR' }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+
+    const { getByText, getByRole, getAllByTestId } = render(<ReviewPRsSection />);
+
+    const toggle = getByRole('button', { name: /requested by me \(2\)/i });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(getByText('My PRs (1)')).toBeTruthy();
+    expect(getByText('PRs to Review (1)')).toBeTruthy();
+
+    let tables = getAllByTestId('pr-table-rows');
+    expect(tables[0].textContent).toContain('Requested merged PR');
+    expect(tables[0].textContent).toContain('Requested own PR');
+    expect(tables[1].textContent).toBe('My normal PR');
+    expect(tables[2].textContent).toBe('Review PR');
+
+    // Collapsible like the Hidden section, but starts expanded.
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    tables = getAllByTestId('pr-table-rows');
+    expect(tables).toHaveLength(2);
+    expect(tables[0].textContent).toBe('My normal PR');
+  });
+
+  it('shows an empty state when filters exclude all requested PRs', () => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    usePRsMock.mockReturnValue({
+      data: [
+        makePR({ number: 91, title: 'Requested chat PR', via_manual: true }),
+        makePR({ number: 92, title: 'Billing review PR' }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+
+    const { getByText, getByRole } = render(<ReviewPRsSection searchTerm="billing" />);
+    expect(getByRole('button', { name: /requested by me \(0\)/i })).toBeTruthy();
+    expect(getByText('No matching requested PRs')).toBeTruthy();
+  });
+
+  it('moves a hidden manually requested PR to the Hidden section, not Requested by Me', () => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    usePRsMock.mockReturnValue({
+      data: [
+        makePR({ number: 81, title: 'Deleted requested PR', via_manual: true, hidden: true }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+
+    const { queryByText, getByRole } = render(<ReviewPRsSection />);
+    expect(queryByText(/^Requested by Me \(/)).toBeNull();
+    expect(getByRole('button', { name: /hidden \(1\)/i })).toBeTruthy();
+  });
+
   it('applies the search term to the Hidden section with the same semantics', () => {
     useTelemetryMock.mockReturnValue({ track: vi.fn() });
     usePRsMock.mockReturnValue({

@@ -163,6 +163,15 @@
     color: $color-text-tertiary;
     opacity: 0.5;
   }
+
+  // GitHub's merged purple
+  &--merged {
+    color: #a371f7;
+  }
+
+  &--closed {
+    color: $color-text-tertiary;
+  }
 }
 
 .notes-cell {

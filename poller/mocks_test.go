@@ -273,7 +273,11 @@ type MockDatabase struct {
 		ViaTeams []string
 	}
 
-	EnsureUserPRViewCalls []struct {
+	ManualClaimPRIDs        []int
+	TelemetryEvents         []db.TelemetryEvent
+	CreateUserErr           error
+	HideNonManualViewsCalls []int
+	EnsureUserPRViewCalls   []struct {
 		UserID   int
 		PRID     int
 		IsAuthor bool
@@ -431,7 +435,7 @@ func (m *MockDatabase) SetPRError(owner, repo string, prNumber int, message stri
 	return nil
 }
 
-func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string) error {
+func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := prDBKey(owner, repo, prNumber)
@@ -445,6 +449,7 @@ func (m *MockDatabase) MarkPRCompleted(owner, repo string, prNumber int, commitS
 		pr.MediumCount = medium
 		pr.LowCount = low
 		pr.ReviewVerdict = verdict
+		pr.ModelFallback = modelFallback
 		pr.ErrorMessage = ""
 	}
 	return nil
@@ -581,6 +586,13 @@ func (m *MockDatabase) GetUserByID(id int) (*db.User, error) {
 }
 
 func (m *MockDatabase) GetUserByUsername(username string) (*db.User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for i := range m.Users {
+		if m.Users[i].GitHubUsername == username {
+			return &m.Users[i], nil
+		}
+	}
 	return nil, nil
 }
 
@@ -592,6 +604,15 @@ func (m *MockDatabase) GetAllUsers() ([]db.User, error) {
 }
 
 func (m *MockDatabase) CreateUser(user *db.User) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.CreateUserErr != nil {
+		// Simulate losing a create race: the winner's row exists, we error.
+		m.Users = append(m.Users, db.User{ID: len(m.Users) + 1, GitHubID: user.GitHubID, GitHubUsername: user.GitHubUsername})
+		return m.CreateUserErr
+	}
+	user.ID = len(m.Users) + 1
+	m.Users = append(m.Users, *user)
 	return nil
 }
 
@@ -682,6 +703,36 @@ func (m *MockDatabase) EnsureUserPRView(userID, prID int, isAuthor bool) error {
 		IsAuthor bool
 	}{userID, prID, isAuthor})
 	return nil
+}
+
+func (m *MockDatabase) EnsureManualPRView(userID, prID int, isAuthor bool) error {
+	return nil
+}
+
+func (m *MockDatabase) HideNonManualViewsForPR(prID int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.HideNonManualViewsCalls = append(m.HideNonManualViewsCalls, prID)
+	return nil
+}
+
+func (m *MockDatabase) SetPRState(owner, repo string, prNumber int, state string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pr, ok := m.PRs[prDBKey(owner, repo, prNumber)]; ok {
+		pr.PRState = state
+	}
+	return nil
+}
+
+func (m *MockDatabase) GetPRIDsWithManualClaims() (map[int]bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	claims := make(map[int]bool, len(m.ManualClaimPRIDs))
+	for _, id := range m.ManualClaimPRIDs {
+		claims[id] = true
+	}
+	return claims, nil
 }
 
 func (m *MockDatabase) BatchUpsertPRs(prs []*db.PR) error {
@@ -793,6 +844,9 @@ func (m *MockDatabase) MigrateLegacyNotes(userID int) (int, error) {
 }
 
 func (m *MockDatabase) CreateTelemetryEvents(events []db.TelemetryEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.TelemetryEvents = append(m.TelemetryEvents, events...)
 	return nil
 }
 

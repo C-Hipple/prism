@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -46,6 +47,11 @@ type AgentConfig struct {
 	// deterministically post-parse (see checks.go). Off by default; when off
 	// the prompt and outputs are byte-identical to a checkless run.
 	RequiredChecks bool
+
+	// FailureLogSink, when non-nil, is called synchronously with the raw
+	// stream-json log path after a failed run, before the error returns —
+	// LogsDir is ephemeral, so this is the log's only path off the instance.
+	FailureLogSink func(logPath string)
 }
 
 // AgentReview is the result of a successful agent run.
@@ -63,7 +69,15 @@ type AgentReview struct {
 
 	RawFinal string // the agent's final result text (pre-parse, for debugging)
 	CloneDir string // path to the per-invocation clone (kept for inspection)
-	LogPath  string // path to the raw stream-json file
+	LogPath  string // where the raw stream-json was written (removed by then — /tmp hygiene)
+
+	// Model verification: the CLI reports the serving model in the stream
+	// (init + assistant events). ModelFallback means it did not satisfy the
+	// requested model — the review still publishes, but callers must surface
+	// it loudly (log, telemetry, dashboard badge).
+	RequestedModel string
+	ServedModel    string
+	ModelFallback  bool
 }
 
 // Spawner abstracts subprocess creation so tests can stub the `claude` CLI.
@@ -229,6 +243,15 @@ func RunAgentReview(
 	}
 	defer logFile.Close()
 
+	// LogsDir is /tmp (= instance memory on Cloud Run): remove the jsonl once
+	// it isn't the sole record of the run. No sink (local dev) = keep on failure.
+	logRemovable := false
+	defer func() {
+		if logRemovable {
+			_ = os.Remove(logPath)
+		}
+	}()
+
 	// Drain stderr to a buffer so we can include it on failure. Safe to be
 	// unbounded for now — dev use, sensible claude outputs.
 	var stderrBuf strings.Builder
@@ -245,24 +268,46 @@ func RunAgentReview(
 	waitErr := proc.Wait()
 	stderrWG.Wait()
 
+	persistFailureLog := func() {
+		if agentCfg.FailureLogSink == nil {
+			return
+		}
+		_ = logFile.Sync()
+		agentCfg.FailureLogSink(logPath)
+		logRemovable = true
+	}
+
 	if parseErr != nil {
 		// Turn-cap hit or parse error — subprocess already killed inside parser.
+		persistFailureLog()
 		return nil, fmt.Errorf("agent: %w (stderr: %s)", parseErr, truncate(stderrBuf.String(), 1000))
 	}
 
 	if runCtx.Err() == context.DeadlineExceeded {
+		persistFailureLog()
 		return nil, fmt.Errorf("agent: wall-clock timeout (%s) after %d turns (stderr: %s)",
 			agentCfg.WallClock, parseResult.assistantTurns, truncate(stderrBuf.String(), 1000))
 	}
 
 	if waitErr != nil {
-		return nil, fmt.Errorf("agent: claude exited with error: %w (stderr: %s)",
-			waitErr, truncate(stderrBuf.String(), 1000))
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: claude exited with error: %w (stream: %s) (stderr: %s)",
+			waitErr, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
+	}
+
+	// The CLI can exit 0 after an error result event; ungated, the error text
+	// would publish as a "successful" SUMMARY review.
+	if parseResult.streamErr != "" {
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: CLI reported error in stream: %s (stderr: %s)",
+			truncate(parseResult.streamErr, 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	if parseResult.finalOutput == "" {
 		log.Printf("%s claude finished with no final result after %d turn(s)", logPrefix, parseResult.assistantTurns)
-		return nil, fmt.Errorf("agent: no final result emitted (stderr: %s)", truncate(stderrBuf.String(), 1000))
+		persistFailureLog()
+		return nil, fmt.Errorf("agent: no final result emitted after %d turn(s) (stream: %s) (stderr: %s)",
+			parseResult.assistantTurns, truncate(parseResult.diagnostic(), 1000), truncate(stderrBuf.String(), 1000))
 	}
 
 	comments, parseErr := parseAgentJSON(parseResult.finalOutput)
@@ -293,18 +338,46 @@ func RunAgentReview(
 			logPrefix, checkTel.ChecksIssued, checkTel.ChecksAnswered, checkTel.ChecksViolated,
 			checkTel.ChecksEvidenceOK, len(checkFindings))
 	}
-	log.Printf("%s complete in %s (turns=%d, comments=%d)",
-		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments))
+	// Fallback if ANY served model fails to match — a transient fallback
+	// that recovers mid-run still ran turns on the wrong model. ServedModel
+	// reports the offender (or the primary model on a clean run).
+	servedModel := ""
+	modelFallback := false
+	if len(parseResult.servedModels) > 0 {
+		servedModel = parseResult.servedModels[0]
+	} else {
+		// Fail-open for a monitoring feature: make a silent regression in
+		// the CLI's model reporting visible in logs.
+		log.Printf("%s WARNING: stream reported no serving model — fallback detection skipped", logPrefix)
+	}
+	for _, m := range parseResult.servedModels {
+		if !modelMatches(model, m) {
+			servedModel = m
+			modelFallback = true
+			break
+		}
+	}
+	if modelFallback {
+		log.Printf("%s WARNING: MODEL FALLBACK: requested=%s served=%s (all seen: %v) — review ran on the wrong model",
+			logPrefix, model, servedModel, parseResult.servedModels)
+	}
 
+	log.Printf("%s complete in %s (turns=%d, comments=%d, model=%s)",
+		logPrefix, time.Since(spawnStart), parseResult.assistantTurns, len(comments), servedModel)
+
+	logRemovable = true
 	return &AgentReview{
-		Comments:      comments,
-		Gates:         gates,
-		BugMemory:     memMatch,
-		Checks:        checkTel,
-		CheckFindings: checkFindings,
-		RawFinal:      parseResult.finalOutput,
-		CloneDir:      cloneDir,
-		LogPath:       logPath,
+		Comments:       comments,
+		Gates:          gates,
+		BugMemory:      memMatch,
+		Checks:         checkTel,
+		CheckFindings:  checkFindings,
+		RawFinal:       parseResult.finalOutput,
+		CloneDir:       cloneDir,
+		LogPath:        logPath,
+		RequestedModel: model,
+		ServedModel:    servedModel,
+		ModelFallback:  modelFallback,
 	}, nil
 }
 
@@ -605,6 +678,52 @@ func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
 type agentParseResult struct {
 	finalOutput    string
 	assistantTurns int
+	streamErr      string   // error the CLI reported inside the stream (result event with error subtype)
+	lastEvent      string   // raw last stream line, fallback diagnostic when no structured error arrived
+	servedModels   []string // distinct models the stream reported, in first-seen order; empty if never reported
+}
+
+// diagnostic returns the best available explanation of a failed run — under
+// stream-json the CLI reports errors on stdout and stderr stays empty, so a
+// bare exit status is uninformative.
+func (r *agentParseResult) diagnostic() string {
+	if r.streamErr != "" {
+		return r.streamErr
+	}
+	if r.lastEvent != "" {
+		return "last event: " + r.lastEvent
+	}
+	return "no stream output"
+}
+
+// noteServedModel records every distinct model the stream reports, in
+// first-seen order — a transient mid-run fallback must not be masked by a
+// later recovery to the original model. Error events carry the placeholder
+// "<synthetic>" model — never a serving model.
+func (r *agentParseResult) noteServedModel(v any) {
+	s, ok := v.(string)
+	if !ok || s == "" || strings.HasPrefix(s, "<") {
+		return
+	}
+	for _, m := range r.servedModels {
+		if m == s {
+			return
+		}
+	}
+	r.servedModels = append(r.servedModels, s)
+}
+
+// modelMatches reports whether the served model satisfies the requested one.
+// Substring in either direction tolerates alias vs full id ("opus" vs
+// "claude-opus-4-8") and dated vs undated ids in config or stream
+// ("claude-fable-5-20260115" vs "claude-fable-5") without false alarms.
+// Known blind spot: a same-family version swap where one id prefixes the
+// other (requested "claude-opus-4", served "claude-opus-4-8") is NOT
+// detected — configure full model ids to avoid it.
+func modelMatches(requested, served string) bool {
+	requested = strings.ToLower(requested)
+	served = strings.ToLower(served)
+	return strings.Contains(served, requested) || strings.Contains(requested, served)
 }
 
 func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*agentParseResult, error) {
@@ -616,6 +735,9 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		line := scanner.Bytes()
 		_, _ = logFile.Write(line)
 		_, _ = logFile.Write([]byte{'\n'})
+		if len(bytes.TrimSpace(line)) > 0 {
+			result.lastEvent = truncate(string(line), 2000)
+		}
 
 		var ev map[string]any
 		if err := json.Unmarshal(line, &ev); err != nil {
@@ -623,24 +745,52 @@ func parseAgentStream(proc SpawnedProcess, logFile io.Writer, maxTurns int) (*ag
 		}
 
 		switch ev["type"] {
+		case "system":
+			if ev["subtype"] == "init" {
+				result.noteServedModel(ev["model"])
+			}
 		case "assistant":
+			if msg, ok := ev["message"].(map[string]any); ok {
+				result.noteServedModel(msg["model"])
+			}
 			result.assistantTurns++
 			if result.assistantTurns%5 == 0 || result.assistantTurns == 1 {
 				log.Printf("[AGENT] assistant turn %d/%d", result.assistantTurns, maxTurns)
 			}
 			if result.assistantTurns > maxTurns {
 				_ = proc.Kill()
-				return nil, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
+				return result, fmt.Errorf("exceeded max-turns (%d)", maxTurns)
 			}
 		case "result":
 			if s, ok := ev["result"].(string); ok {
 				result.finalOutput = s
 			}
+			subtype, _ := ev["subtype"].(string)
+			isErr, _ := ev["is_error"].(bool)
+			if isErr || (subtype != "" && subtype != "success") {
+				msg := subtype
+				for _, key := range []string{"error", "result", "message"} {
+					if s, ok := ev[key].(string); ok && s != "" {
+						if msg != "" {
+							msg += ": "
+						}
+						msg += s
+						break
+					}
+				}
+				if msg == "" {
+					msg = "unspecified error in result event"
+				}
+				result.streamErr = truncate(msg, 2000)
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read stdout: %w", err)
+		// Nothing drains stdout after this return; unkilled, proc.Wait()
+		// stalls until the wall-clock watcher fires.
+		_ = proc.Kill()
+		return result, fmt.Errorf("read stdout: %w", err)
 	}
 	return result, nil
 }

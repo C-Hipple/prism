@@ -40,6 +40,8 @@ func prModelToPR(m *PRModel) *PR {
 		Draft:           m.Draft,
 		CIState:         m.CIState,
 		CIFailedChecks:  ciFailedChecks,
+		PRState:         m.PRState,
+		ModelFallback:   m.ModelFallback,
 		CriticalCount:   m.CriticalCount,
 		MediumCount:     m.MediumCount,
 		LowCount:        m.LowCount,
@@ -79,6 +81,8 @@ func prToPRModel(p *PR) *PRModel {
 		MyReviewStatus:  p.MyReviewStatus,
 		CIState:         p.CIState,
 		CIFailedChecks:  ciFailedChecks,
+		PRState:         p.PRState,
+		ModelFallback:   p.ModelFallback,
 		CriticalCount:   p.CriticalCount,
 		MediumCount:     p.MediumCount,
 		LowCount:        p.LowCount,
@@ -186,7 +190,7 @@ func (g *GormDB) BatchUpsertPRs(prs []*PR) error {
 // review's persisted location + importance counts + parsed verdict. Uses an
 // explicit UPDATE (not an upsert) so it can't be defeated by a concurrent
 // stale-read from the polling cycle.
-func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string) error {
+func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool) error {
 	now := time.Now().UTC()
 
 	// Diagnostic: read status before the UPDATE so we know what we were
@@ -205,6 +209,7 @@ func (g *GormDB) MarkPRCompleted(owner, repo string, prNumber int, commitSHA, re
 			"medium_count":     medium,
 			"low_count":        low,
 			"review_verdict":   verdict,
+			"model_fallback":   modelFallback,
 			"error_message":    "",
 		})
 	if res.Error != nil {
@@ -361,6 +366,14 @@ func (g *GormDB) GetAllPRs() ([]PR, error) {
 	}
 
 	return prs, nil
+}
+
+// SetPRState records the PR's GitHub state ("open", "closed", "merged").
+// Only meaningful for rows retained past close; open PRs stay at the default.
+func (g *GormDB) SetPRState(owner, repo string, prNumber int, state string) error {
+	return g.db.Model(&PRModel{}).
+		Where("repo_owner = ? AND repo_name = ? AND pr_number = ?", owner, repo, prNumber).
+		Update("pr_state", state).Error
 }
 
 // DeletePR removes a PR from the database

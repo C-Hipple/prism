@@ -102,6 +102,11 @@ type ReviewResult struct {
 	// stage (see service/checks.go). Zero value when the feature is off.
 	Checks service.RequiredCheckTelemetry
 
+	// ModelFallback: the agent stage ran on a different model than requested
+	// (see AgentReview.ModelFallback). Persisted with the completed review so
+	// the dashboard can badge it.
+	ModelFallback bool
+
 	// GateAlerts is every deterministic alert that fed the review (mechanical
 	// gate firings + required-check escalations), pre-merge. It exists solely
 	// for payload.Build's no-swallow assertion: each alert must still be

@@ -92,6 +92,43 @@ describe('ReviewLinkMenu verdict badge', () => {
   });
 });
 
+describe('ReviewLinkMenu model-fallback badge', () => {
+  const fallbackBadge = () =>
+    screen.queryByRole('img', { name: 'Review generated on a fallback model' });
+
+  beforeEach(() => {
+    useTelemetryMock.mockReturnValue({ track: vi.fn() });
+  });
+  afterEach(() => cleanup());
+
+  it('renders the orange F badge when the review ran on a fallback model', () => {
+    renderMenu({ pr: makePR({ model_fallback: true }) });
+    const el = fallbackBadge();
+    expect(el).toBeTruthy();
+    expect(el?.textContent).toBe('F');
+    expect(el?.className).toContain('review-menu__fallback-badge');
+  });
+
+  it('renders both badges when a fallback review requests changes', () => {
+    renderMenu({ pr: makePR({ model_fallback: true, review_verdict: 'request_changes' }) });
+    expect(fallbackBadge()).toBeTruthy();
+    expect(badge()).toBeTruthy();
+  });
+
+  it('renders no F badge when the field is false or absent', () => {
+    renderMenu({ pr: makePR({ model_fallback: false }) });
+    expect(fallbackBadge()).toBeNull();
+    cleanup();
+    renderMenu({ pr: makePR() });
+    expect(fallbackBadge()).toBeNull();
+  });
+
+  it('renders no F badge without a review URL', () => {
+    renderMenu({ pr: makePR({ model_fallback: true }), reviewUrl: '' });
+    expect(fallbackBadge()).toBeNull();
+  });
+});
+
 describe('ReviewLinkMenu regenerate action', () => {
   beforeEach(() => {
     useTelemetryMock.mockReturnValue({ track: vi.fn() });

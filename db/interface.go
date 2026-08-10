@@ -29,6 +29,8 @@ type PR struct {
 	Draft           bool       // true if PR is in draft mode
 	CIState         string     // CI status: "success", "failure", "pending", "unknown"
 	CIFailedChecks  string     // JSON array of failed check names
+	PRState         string     // GitHub PR state: "open", "closed", "merged"
+	ModelFallback   bool       // latest review ran on a fallback model, not the requested one
 	// Review importance counts
 	CriticalCount int // Number of CRITICAL importance comments
 	MediumCount   int // Number of MEDIUM importance comments
@@ -74,6 +76,7 @@ type UserPRAssignment struct {
 	MyReviewStatus string // User's review status for this PR
 	Notes          string // User's notes for this PR
 	UserHidden     bool   // User moved this PR to the Hidden section
+	ViaManual      bool   // User manually requested a review for this PR
 }
 
 // UserPRView represents the relationship between users and PRs (new name for UserPRAssignment)
@@ -89,6 +92,7 @@ type UserPRView struct {
 	Notes        string // User's notes for this PR
 	Hidden       bool   // Whether this PR is hidden from the user's view (poller soft delete)
 	UserHidden   bool   // User moved this PR to the Hidden section
+	ViaManual    bool   // User manually requested a review for this PR
 }
 
 // UserPRViewBatchItem represents a single row for batch upsert into user_pr_views.
@@ -121,6 +125,7 @@ type PRWithUserView struct {
 	ReviewStatus string   // User's review status from user_pr_views
 	ViaTeams     []string // Team names from user_pr_views
 	UserHidden   bool     // User moved this PR to the Hidden section
+	ViaManual    bool     // User manually requested a review for this PR
 }
 
 // FindingOutcome is a recorded human triage decision on a single review
@@ -204,7 +209,7 @@ type Database interface {
 	SetPRGenerating(owner, repo string, prNumber int, commitSHA, title, author string, createdAt *time.Time, draft bool) error
 	SetPRAgentReviewing(owner, repo string, prNumber int) error
 	SetPRError(owner, repo string, prNumber int, message string) error
-	MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string) error
+	MarkPRCompleted(owner, repo string, prNumber int, commitSHA, reviewPath string, critical, medium, low int, verdict string, modelFallback bool) error
 	GetAllPRs() ([]PR, error)
 	DeletePR(owner, repo string, prNumber int) error
 	ResetStaleGeneratingPRs(timeoutMinutes int) (int, error)
@@ -252,6 +257,10 @@ type Database interface {
 	HidePRForUser(userID, prID int) error
 	SetUserHiddenForPR(userID, prID int, hidden bool) error
 	EnsureUserPRView(userID, prID int, isAuthor bool) error
+	EnsureManualPRView(userID, prID int, isAuthor bool) error
+	GetPRIDsWithManualClaims() (map[int]bool, error)
+	HideNonManualViewsForPR(prID int) error
+	SetPRState(owner, repo string, prNumber int, state string) error
 	MigrateLegacyNotes(userID int) (int, error)
 
 	// Leader election: only the lease holder runs the automatic poll cycle, so

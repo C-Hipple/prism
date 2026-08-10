@@ -118,8 +118,9 @@ func (p *Poller) pruneStaleViaTeams(
 			UserID: row.UserID,
 			PRID:   row.PRID,
 			// Notes keep the row visible: hiding it would bury user-written
-			// notes with no UI path back to them.
-			Hide: !row.IsAuthor && row.ReviewStatus == "" && row.Notes == "",
+			// notes with no UI path back to them. A manual request is its own
+			// claim on the row, independent of team entitlement.
+			Hide: !row.IsAuthor && row.ReviewStatus == "" && row.Notes == "" && !row.ViaManual,
 		})
 	}
 

@@ -101,6 +101,7 @@ type PRResponse struct {
 	ApprovalCount   int      `json:"approval_count"`   // Number of current approvals
 	MyReviewStatus  string   `json:"my_review_status"` // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", or ""
 	Draft           bool     `json:"draft"`            // true if PR is in draft mode
+	PRState         string   `json:"pr_state"`         // GitHub PR state: "open", "closed", "merged"
 	CIState         string   `json:"ci_state"`         // "success", "failure", "pending", "unknown"
 	CIFailedChecks  []string `json:"ci_failed_checks"` // Names of failed checks
 	CreatedAt       *string  `json:"created_at"`       // PR creation timestamp from GitHub
@@ -113,10 +114,14 @@ type PRResponse struct {
 	// Overall AI review verdict parsed from the SUMMARY entry:
 	// "request_changes", "approve_suggestions", "approve", or "" (unknown)
 	ReviewVerdict string `json:"review_verdict"`
+	// Latest review ran on a fallback model, not the requested one
+	ModelFallback bool `json:"model_fallback"`
 	// User notes
 	Notes string `json:"notes"`
 	// User moved this PR to the collapsed Hidden section
 	Hidden bool `json:"hidden"`
+	// User manually requested a review for this PR (Requested by Me section)
+	ViaManual bool `json:"via_manual"`
 	// Populated when Status=="error".
 	ErrorMessage string `json:"error_message,omitempty"`
 }
@@ -395,6 +400,7 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			ApprovalCount:   dbPR.ApprovalCount,
 			MyReviewStatus:  prView.ReviewStatus, // Use user-specific review status
 			Draft:           dbPR.Draft,
+			PRState:         prStateOrOpen(dbPR.PRState),
 			CIState:         dbPR.CIState,
 			CIFailedChecks:  ciFailedChecks,
 			CreatedAt:       createdAt,
@@ -404,8 +410,10 @@ func (s *Server) handleGetPRs(w http.ResponseWriter, r *http.Request) {
 			MediumCount:     dbPR.MediumCount,
 			LowCount:        dbPR.LowCount,
 			ReviewVerdict:   dbPR.ReviewVerdict,
+			ModelFallback:   dbPR.ModelFallback,
 			Notes:           notes,
 			Hidden:          prView.UserHidden,
+			ViaManual:       prView.ViaManual,
 			ErrorMessage:    dbPR.ErrorMessage,
 		})
 	}
@@ -704,6 +712,11 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 		Owner  string `json:"owner"`
 		Repo   string `json:"repo"`
 		Number int    `json:"number"`
+		// "form" = the dashboard's paste-a-URL input, the one origin that
+		// claims the PR into the requester's Requested by Me section.
+		// API/skill callers omit it: their reviews run but stay off the
+		// requester's dashboard.
+		Source string `json:"source"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[API] generate-review: bad request body: %v", err)
@@ -773,6 +786,39 @@ func (s *Server) handleGenerateReview(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[API] generate-review: ingested + triggered %s/%s#%d (commit: %s, state: %s, merged: %t)",
 		req.Owner, req.Repo, req.Number, headSHA[:7], ghPR.GetState(), ghPR.GetMerged())
+
+	// Persist GitHub state so retained merged/closed PRs render as such.
+	prState := strings.ToLower(ghPR.GetState())
+	if ghPR.GetMerged() {
+		prState = "merged"
+	}
+	if err := s.db.SetPRState(req.Owner, req.Repo, req.Number, prState); err != nil {
+		log.Printf("[API] generate-review: SetPRState failed for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
+	}
+
+	// Claim the PR for the requester so it lands in their "Requested by Me"
+	// section, and stays there (closed-PR cleanup skips live manual claims)
+	// until they delete it. Form submissions only — a paste into the
+	// dashboard input is deliberate; API/skill traffic is not.
+	if user := auth.GetCurrentUser(r); user != nil && req.Source == "form" {
+		if dbPR, err := s.db.GetPR(req.Owner, req.Repo, req.Number); err == nil && dbPR != nil {
+			isAuthor := strings.EqualFold(author, user.GitHubUsername)
+			if err := s.db.EnsureManualPRView(user.ID, dbPR.ID, isAuthor); err != nil {
+				log.Printf("[API] generate-review: EnsureManualPRView failed for user %d on %s/%s#%d: %v",
+					user.ID, req.Owner, req.Repo, req.Number, err)
+			} else {
+				// pr_created payloads are re-resolved per client, so the
+				// requester's clients insert the row with their view data.
+				s.BroadcastEventToUser(user.ID, EventPRCreated, map[string]interface{}{
+					"owner":  req.Owner,
+					"repo":   req.Repo,
+					"number": req.Number,
+				})
+			}
+		} else if err != nil {
+			log.Printf("[API] generate-review: GetPR after upsert failed for %s/%s#%d: %v", req.Owner, req.Repo, req.Number, err)
+		}
+	}
 
 	// Notify all clients so the dashboard reflects the new PR/status.
 	s.BroadcastEvent(EventPRUpdated, map[string]interface{}{
@@ -1461,6 +1507,14 @@ func (s *Server) BroadcastEventToUser(userID int, eventType string, payload inte
 	}
 }
 
+// prStateOrOpen defaults a missing pr_state (rows predating the column) to "open".
+func prStateOrOpen(state string) string {
+	if state == "" {
+		return "open"
+	}
+	return state
+}
+
 // getPRResponse constructs a PR response using the default dev-mode user context.
 func (s *Server) getPRResponse(owner, repo string, number int) *PRResponse {
 	return s.getPRResponseForUser(s.getDevUserID(), owner, repo, number)
@@ -1537,6 +1591,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 	}
 	isMine := strings.EqualFold(author, s.cfg.GitHubUsername)
 	hidden := false
+	viaManual := false
 
 	if userID > 0 {
 		if assignment, err := s.db.GetUserPRAssignment(userID, pr.ID); err == nil && assignment != nil {
@@ -1549,6 +1604,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 			}
 			isMine = assignment.IsAuthor
 			hidden = assignment.UserHidden
+			viaManual = assignment.ViaManual
 		}
 	}
 
@@ -1572,6 +1628,7 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		ApprovalCount:   pr.ApprovalCount,
 		MyReviewStatus:  myReviewStatus,
 		Draft:           pr.Draft,
+		PRState:         prStateOrOpen(pr.PRState),
 		CIState:         pr.CIState,
 		CIFailedChecks:  ciFailedChecks,
 		CreatedAt:       createdAt,
@@ -1581,8 +1638,10 @@ func (s *Server) getPRResponseForUser(userID int, owner, repo string, number int
 		MediumCount:     pr.MediumCount,
 		LowCount:        pr.LowCount,
 		ReviewVerdict:   pr.ReviewVerdict,
+		ModelFallback:   pr.ModelFallback,
 		Notes:           notes,
 		Hidden:          hidden,
+		ViaManual:       viaManual,
 		ErrorMessage:    pr.ErrorMessage,
 	}
 }

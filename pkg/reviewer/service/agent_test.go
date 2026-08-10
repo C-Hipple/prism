@@ -156,6 +156,446 @@ func TestParseAgentStream_MaxTurnsKills(t *testing.T) {
 	}
 }
 
+// fakeSpawner returns a canned process regardless of the command.
+type fakeSpawner struct {
+	proc *fakeProcess
+}
+
+func (s *fakeSpawner) Spawn(ctx context.Context, name string, args []string, dir string) (SpawnedProcess, error) {
+	return s.proc, nil
+}
+
+// seedAgentCache pre-populates the clone cache for owner/repo with a clone of
+// the local bare repo, so cloneForAgent's cache-hit path runs and never
+// touches github.com.
+func seedAgentCache(t *testing.T, cloneRoot, owner, repo, bareURL string) {
+	t.Helper()
+	cacheDir := filepath.Join(cloneRoot, ".cache", owner+"__"+repo)
+	if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "clone", "--quiet", bareURL, cacheDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("seed cache clone: %v (%s)", err, out)
+	}
+}
+
+func TestParseAgentStream_CapturesStreamError(t *testing.T) {
+	stream := `{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}
+{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: spend limit exceeded"}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseAgentStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if !strings.Contains(res.streamErr, "spend limit exceeded") {
+		t.Errorf("streamErr missing CLI error: %q", res.streamErr)
+	}
+	if !strings.Contains(res.diagnostic(), "error_during_execution") {
+		t.Errorf("diagnostic missing subtype: %q", res.diagnostic())
+	}
+}
+
+func TestParseAgentStream_DiagnosticFallsBackToLastEvent(t *testing.T) {
+	stream := `{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"thinking"}]}}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseAgentStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if res.streamErr != "" {
+		t.Errorf("unexpected streamErr: %q", res.streamErr)
+	}
+	if !strings.Contains(res.diagnostic(), "thinking") {
+		t.Errorf("diagnostic should carry the last event: %q", res.diagnostic())
+	}
+}
+
+// TestParseAgentStream_KillsOnScannerOverflow — a line over the 8MB scanner
+// cap must kill the subprocess, or proc.Wait() stalls on the undrained pipe.
+func TestParseAgentStream_KillsOnScannerOverflow(t *testing.T) {
+	huge := `{"type":"assistant","message":{"content":[{"type":"text","text":"` +
+		strings.Repeat("x", 9*1024*1024) + `"}]}}` + "\n"
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(huge),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	_, err := parseAgentStream(proc, &logBuf, 10)
+	if err == nil {
+		t.Fatal("expected scanner overflow error")
+	}
+	if !proc.killed {
+		t.Error("expected proc to be killed on scanner error")
+	}
+}
+
+func TestParseAgentStream_CapturesServedModel(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-4-8"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"x"}]}}
+{"type":"result","result":"done"}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseAgentStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if len(res.servedModels) != 1 || res.servedModels[0] != "claude-opus-4-8" {
+		t.Errorf("servedModels: got %v want [claude-opus-4-8]", res.servedModels)
+	}
+}
+
+func TestParseAgentStream_IgnoresSyntheticModel(t *testing.T) {
+	stream := `{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"error"}]}}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"x"}]}}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseAgentStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if len(res.servedModels) != 1 || res.servedModels[0] != "claude-fable-5" {
+		t.Errorf("servedModels: got %v want [claude-fable-5] (synthetic must be skipped)", res.servedModels)
+	}
+}
+
+func TestParseAgentStream_RecordsMidRunModelSwitch(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","model":"claude-fable-5"}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"x"}]}}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"y"}]}}
+`
+	proc := &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}
+	var logBuf bytes.Buffer
+	res, err := parseAgentStream(proc, &logBuf, 10)
+	if err != nil {
+		t.Fatalf("parseAgentStream: %v", err)
+	}
+	if len(res.servedModels) != 2 || res.servedModels[0] != "claude-fable-5" || res.servedModels[1] != "claude-opus-4-8" {
+		t.Errorf("servedModels: got %v want [claude-fable-5 claude-opus-4-8]", res.servedModels)
+	}
+}
+
+func TestModelMatches(t *testing.T) {
+	cases := []struct {
+		requested, served string
+		want              bool
+	}{
+		{"claude-fable-5", "claude-fable-5", true},
+		{"claude-fable-5", "claude-fable-5-20260115", true},
+		{"claude-fable-5-20260115", "claude-fable-5", true},
+		{"opus", "claude-opus-4-8", true},
+		{"claude-fable-5", "claude-opus-4-8", false},
+		{"claude-opus-4-8", "claude-fable-5", false},
+		{"Claude-Fable-5", "claude-fable-5", true},
+		// Documented blind spot, pinned deliberately: a same-family version
+		// swap where one id prefixes the other is NOT detected. Configure
+		// full model ids so this shape cannot arise.
+		{"claude-opus-4", "claude-opus-4-8", true},
+	}
+	for _, c := range cases {
+		if got := modelMatches(c.requested, c.served); got != c.want {
+			t.Errorf("modelMatches(%q, %q) = %v, want %v", c.requested, c.served, got, c.want)
+		}
+	}
+}
+
+func TestRunAgentReview_DetectsModelFallback(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	stream := `{"type":"system","subtype":"init","model":"claude-opus-4-8"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"x"}]}}
+{"type":"result","result":"[]"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+		Model:        "claude-fable-5",
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if !out.ModelFallback {
+		t.Error("expected ModelFallback=true for opus stream under a fable request")
+	}
+	if out.ServedModel != "claude-opus-4-8" || out.RequestedModel != "claude-fable-5" {
+		t.Errorf("model fields: served=%q requested=%q", out.ServedModel, out.RequestedModel)
+	}
+}
+
+func TestRunAgentReview_DetectsMidRunFallback(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	// Starts on the requested model, falls back partway through, then
+	// RECOVERS — the transient fallback must still be flagged.
+	stream := `{"type":"system","subtype":"init","model":"claude-fable-5"}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"x"}]}}
+{"type":"assistant","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"y"}]}}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"z"}]}}
+{"type":"result","result":"[]"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+		Model:        "claude-fable-5",
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if !out.ModelFallback {
+		t.Error("expected ModelFallback=true for a mid-run switch to a non-matching model")
+	}
+	if out.ServedModel != "claude-opus-4-8" {
+		t.Errorf("ServedModel should name the fallback model, got %q", out.ServedModel)
+	}
+}
+
+func TestRunAgentReview_NoFallbackOnMatchingModel(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	stream := `{"type":"system","subtype":"init","model":"claude-fable-5"}
+{"type":"assistant","message":{"model":"claude-fable-5","content":[{"type":"text","text":"x"}]}}
+{"type":"result","result":"[]"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+		Model:        "claude-fable-5",
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if out.ModelFallback {
+		t.Errorf("unexpected fallback: served=%q requested=%q", out.ServedModel, out.RequestedModel)
+	}
+}
+
+func TestRunAgentReview_FailureSurfacesStreamErrorAndPersistsLog(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	stream := `{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}
+{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: spend limit exceeded"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout:  bytes.NewBufferString(stream),
+		stderr:  &bytes.Buffer{},
+		waitErr: errors.New("exit status 1"),
+		killCh:  make(chan struct{}),
+	}}
+
+	var sinkCalls int
+	var sinkContent []byte
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+		FailureLogSink: func(logPath string) {
+			sinkCalls++
+			b, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Errorf("sink could not read log: %v", err)
+			}
+			sinkContent = b
+		},
+	}
+
+	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "spend limit exceeded") {
+		t.Errorf("error should carry the CLI's stream error, got: %v", err)
+	}
+	if sinkCalls != 1 {
+		t.Fatalf("FailureLogSink calls: got %d want 1", sinkCalls)
+	}
+	if !bytes.Contains(sinkContent, []byte("error_during_execution")) {
+		t.Errorf("persisted log missing error event: %s", sinkContent)
+	}
+	assertLogsDirEmpty(t, cfg.LogsDir)
+}
+
+func assertLogsDirEmpty(t *testing.T, logsDir string) {
+	t.Helper()
+	entries, err := os.ReadDir(logsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected log file to be removed, found %d file(s)", len(entries))
+	}
+}
+
+// TestRunAgentReview_ErrorResultEventWithZeroExit — an error result event
+// with exit 0 must fail the review, not publish as a successful SUMMARY.
+func TestRunAgentReview_ErrorResultEventWithZeroExit(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	stream := `{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}
+{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: overloaded"}
+`
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(stream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+
+	var sinkCalls int
+	cfg := AgentConfig{
+		CloneRootDir:   cloneRoot,
+		LogsDir:        t.TempDir(),
+		WallClock:      time.Minute,
+		MaxTurns:       10,
+		FailureLogSink: func(string) { sinkCalls++ },
+	}
+
+	_, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err == nil {
+		t.Fatal("expected error: an error result event with exit 0 must not be a successful review")
+	}
+	if !strings.Contains(err.Error(), "overloaded") {
+		t.Errorf("error should carry the CLI's stream error, got: %v", err)
+	}
+	if sinkCalls != 1 {
+		t.Errorf("FailureLogSink calls: got %d want 1", sinkCalls)
+	}
+}
+
+// TestRunAgentReview_FailureWithoutSinkKeepsLog — with no sink (local dev)
+// the on-disk jsonl is the only record of a failed run and must survive.
+func TestRunAgentReview_FailureWithoutSinkKeepsLog(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout:  bytes.NewBufferString(`{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}` + "\n"),
+		stderr:  &bytes.Buffer{},
+		waitErr: errors.New("exit status 1"),
+		killCh:  make(chan struct{}),
+	}}
+
+	cfg := AgentConfig{
+		CloneRootDir: cloneRoot,
+		LogsDir:      t.TempDir(),
+		WallClock:    time.Minute,
+		MaxTurns:     10,
+	}
+
+	if _, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil); err == nil {
+		t.Fatal("expected error")
+	}
+	entries, err := os.ReadDir(cfg.LogsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected the failure log to be kept when no sink is configured, found %d file(s)", len(entries))
+	}
+}
+
+func TestRunAgentReview_SuccessDoesNotPersistLog(t *testing.T) {
+	bare, sha := setupLocalBareRepo(t)
+	cloneRoot := t.TempDir()
+	seedAgentCache(t, cloneRoot, "acme", "example", bare)
+
+	spawner := &fakeSpawner{proc: &fakeProcess{
+		stdout: bytes.NewBufferString(fakeStream),
+		stderr: &bytes.Buffer{},
+		killCh: make(chan struct{}),
+	}}
+
+	var sinkCalls int
+	cfg := AgentConfig{
+		CloneRootDir:   cloneRoot,
+		LogsDir:        t.TempDir(),
+		WallClock:      time.Minute,
+		MaxTurns:       10,
+		FailureLogSink: func(string) { sinkCalls++ },
+	}
+
+	out, err := RunAgentReview(context.Background(), cfg, spawner, "acme", "example", "main", 1, sha, nil)
+	if err != nil {
+		t.Fatalf("RunAgentReview: %v", err)
+	}
+	if out == nil || len(out.Comments) == 0 {
+		t.Error("expected comments from the canned stream")
+	}
+	if sinkCalls != 0 {
+		t.Errorf("FailureLogSink must not fire on success, fired %d time(s)", sinkCalls)
+	}
+	assertLogsDirEmpty(t, cfg.LogsDir)
+}
+
 // TestCloneForAgent_LocalBare exercises the real clone path against a local
 // bare repo (no network).
 func TestCloneForAgent_LocalBare(t *testing.T) {
