@@ -1,14 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { usePRs } from '@/hooks/usePRs';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useTelemetry } from '@/hooks/useTelemetry';
+import { useSectionsConfig } from '@/hooks/useSectionsConfig';
 import { PRTable } from './PRTable';
+import { PRSection } from './PRSection';
 import { LoadingSpinner, ErrorMessage } from '@/components/common';
 import { PR } from '@/types/pr';
 import { getTeamFilterName } from '@/utils/teamFilters';
+import { filterAndSortPRs, prKey, prMatchesFilters } from '@/utils/sectionFilters';
 import { TriageFilter, categorizePR } from './triageUtils';
 import type { PRStateFilter } from '@/hooks/useUrlFilters';
 import './SectionHeader.scss';
+import './PRSections.scss';
 
 interface ReviewPRsSectionProps {
   searchTerm?: string;
@@ -16,50 +20,6 @@ interface ReviewPRsSectionProps {
   selectedTeams?: string[];
   selectedRepos?: string[];
   selectedStates?: PRStateFilter[];
-}
-
-interface FilterOptions {
-  searchTerm: string;
-  selectedTeams?: string[];
-  selectedRepos?: string[];
-  selectedStates?: PRStateFilter[];
-  username?: string;
-}
-
-function filterAndSortPRs(prs: PR[], { searchTerm, selectedTeams, selectedRepos, selectedStates, username }: FilterOptions): PR[] {
-  return prs
-    .filter((pr) => {
-      if (searchTerm) {
-        const lowerTerm = searchTerm.toLowerCase();
-        const matchesSearch =
-          pr.title.toLowerCase().includes(lowerTerm) ||
-          pr.repo.toLowerCase().includes(lowerTerm) ||
-          pr.owner.toLowerCase().includes(lowerTerm) ||
-          pr.author.toLowerCase().includes(lowerTerm) ||
-          pr.number.toString().includes(lowerTerm);
-        if (!matchesSearch) return false;
-      }
-
-      if (selectedTeams && selectedTeams.length > 0) {
-        if (!pr.via_teams.some(t => selectedTeams.includes(getTeamFilterName(t, username)))) return false;
-      }
-
-      if (selectedRepos && selectedRepos.length > 0) {
-        if (!selectedRepos.includes(`${pr.owner}/${pr.repo}`)) return false;
-      }
-
-      if (selectedStates && selectedStates.length > 0) {
-        if (!selectedStates.includes(pr.draft ? 'draft' : 'ready')) return false;
-      }
-
-      return true;
-    })
-    .sort((a, b) => {
-      if (!a.created_at && !b.created_at) return 0;
-      if (!a.created_at) return 1;
-      if (!b.created_at) return -1;
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-    });
 }
 
 export function ReviewPRsSection({
@@ -72,46 +32,118 @@ export function ReviewPRsSection({
   const { data: prs, isLoading, error } = usePRs();
   const { data: currentUser } = useCurrentUser();
   const { track } = useTelemetry();
-  // Collapse state is deliberately client-side only (per issue #30); hidden
-  // membership itself is server-persisted per user. Requested starts open
-  // (it's the section the user explicitly populated), Hidden starts closed.
+  const {
+    sections,
+    showUncategorized,
+    addSection,
+    removeSection,
+    renameSection,
+    setSectionFilters,
+    setSectionCollapsed,
+    duplicateSection,
+    moveSection,
+    setShowUncategorized,
+    resetSections,
+  } = useSectionsConfig();
+
+  // Collapse state for the two built-in sections is deliberately client-side
+  // only (per issue #30); hidden membership itself is server-persisted per
+  // user. Requested starts open (it's the section the user explicitly
+  // populated), Hidden starts closed. Configured sections persist their own
+  // collapse state alongside the rest of their config.
   const [hiddenExpanded, setHiddenExpanded] = useState(false);
   const [requestedExpanded, setRequestedExpanded] = useState(true);
+  const [customizing, setCustomizing] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   useEffect(() => {
     track('view_review_prs_page');
   }, [track]);
 
-  const filterOpts: FilterOptions = {
-    searchTerm,
-    selectedTeams,
-    selectedRepos,
-    selectedStates,
-    username: currentUser?.github_username,
-  };
+  const username = currentUser?.github_username;
+  const allPRs = useMemo(() => prs || [], [prs]);
 
-  // Each PR lands in exactly one section: hidden > via_manual > is_mine >
-  // review. User-hidden rows leave the top three and collect in the Hidden
-  // section at the bottom instead.
-  const allPRs = prs || [];
-  const visiblePRs = allPRs.filter(pr => !pr.hidden);
+  // Options offered by the section editor, derived from the loaded PRs the
+  // same way the global filter bar derives its own.
+  const availableTeams = useMemo(
+    () =>
+      Array.from(
+        new Set(allPRs.flatMap((pr) => pr.via_teams.map((team) => getTeamFilterName(team, username))))
+      ).sort(),
+    [allPRs, username]
+  );
+  const availableRepos = useMemo(
+    () => Array.from(new Set(allPRs.map((pr) => `${pr.owner}/${pr.repo}`))).sort(),
+    [allPRs]
+  );
+  const availableAuthors = useMemo(
+    () => Array.from(new Set(allPRs.map((pr) => pr.author).filter(Boolean))).sort(),
+    [allPRs]
+  );
+
+  // The two built-in sections keep their fixed membership: hidden > via_manual
+  // wins over anything the user configures, so a manually requested PR still
+  // lands in exactly one place and hidden rows stay out of the way.
+  const visiblePRs = allPRs.filter((pr) => !pr.hidden);
   const hasHiddenPRs = allPRs.length > visiblePRs.length;
-  const hiddenPRs = filterAndSortPRs(allPRs.filter(pr => pr.hidden), filterOpts);
-  const requestedPRs = filterAndSortPRs(visiblePRs.filter(pr => pr.via_manual), filterOpts);
-  const hasRequestedPRs = visiblePRs.some(pr => pr.via_manual);
-  const myPRs = filterAndSortPRs(visiblePRs.filter(pr => !pr.via_manual && pr.is_mine), filterOpts);
+  const hasRequestedPRs = visiblePRs.some((pr) => pr.via_manual);
 
-  // Apply triage filter to review PRs
-  let reviewPRs = filterAndSortPRs(visiblePRs.filter(pr => !pr.via_manual && !pr.is_mine), filterOpts);
-  if (triageFilter) {
-    reviewPRs = reviewPRs.filter(pr => {
+  // The filter bar's criteria apply on top of every section's own filters.
+  const globalCriteria = {
+    search: searchTerm,
+    teams: selectedTeams,
+    repos: selectedRepos,
+    states: selectedStates,
+  };
+  const globallyFiltered = filterAndSortPRs(
+    visiblePRs.filter((pr) => !pr.via_manual),
+    globalCriteria,
+    username
+  );
+  const requestedPRs = filterAndSortPRs(
+    visiblePRs.filter((pr) => pr.via_manual),
+    globalCriteria,
+    username
+  );
+  const hiddenPRs = filterAndSortPRs(
+    allPRs.filter((pr) => pr.hidden),
+    globalCriteria,
+    username
+  );
+
+  const applyTriage = (sectionPRs: PR[]): PR[] => {
+    if (!triageFilter) return sectionPRs;
+    return sectionPRs.filter((pr) => {
+      // Triage is a review-queue concern, so the user's own PRs are exempt
+      // wherever they appear — the same carve-out the fixed "My PRs" section
+      // used to get.
+      if (pr.is_mine) return true;
       // Only filter completed PRs by triage category
       if (pr.status !== 'completed') return true;
       return categorizePR(pr) === triageFilter;
     });
-  }
+  };
+
+  const matchedKeys = new Set<string>();
+  const sectionPRs = sections.map((section) => {
+    const matches = globallyFiltered.filter((pr) => prMatchesFilters(pr, section.filters, username));
+    for (const pr of matches) matchedKeys.add(prKey(pr));
+    return applyTriage(matches);
+  });
+
+  const uncategorizedPRs = applyTriage(
+    globallyFiltered.filter((pr) => !matchedKeys.has(prKey(pr)))
+  );
 
   const showSyncBanner = !isLoading && !error && allPRs.length === 0;
+
+  const handleDrop = (targetIndex: number) => {
+    if (dragIndex === null || dragIndex === targetIndex) return;
+    track('move_section', { label: `${dragIndex}->${targetIndex}` });
+    moveSection(dragIndex, targetIndex);
+    setDragIndex(null);
+  };
 
   return (
     <>
@@ -124,9 +156,65 @@ export function ReviewPRsSection({
         </div>
       )}
 
+      <div className="section-toolbar">
+        <button
+          type="button"
+          className="column-toggle-btn"
+          aria-pressed={customizing}
+          onClick={() => {
+            const next = !customizing;
+            track('customize_sections', { label: next ? 'open' : 'close' });
+            setCustomizing(next);
+            if (!next) setEditingId(null);
+          }}
+        >
+          {customizing ? 'Done customizing' : 'Customize sections'}
+        </button>
+
+        {customizing && (
+          <>
+            <button
+              type="button"
+              className="column-toggle-btn"
+              onClick={() => {
+                const section = addSection();
+                track('add_section');
+                setEditingId(section.id);
+              }}
+            >
+              + Add section
+            </button>
+            <button
+              type="button"
+              className="column-toggle-btn"
+              onClick={() => {
+                track('reset_sections');
+                setEditingId(null);
+                resetSections();
+              }}
+            >
+              Reset to defaults
+            </button>
+            <label className="section-toolbar__checkbox">
+              <input
+                type="checkbox"
+                checked={showUncategorized}
+                onChange={(e) => setShowUncategorized(e.target.checked)}
+              />
+              Show unmatched PRs
+            </label>
+          </>
+        )}
+      </div>
+
+      {isLoading && <LoadingSpinner />}
+      {error && <ErrorMessage message={`Error loading PRs: ${error.message}`} />}
+
       {/* Requested by Me Section — PRs the user manually requested a review
           for (paste-a-URL form / API). Rendered only when non-empty; deleting
-          an entry removes it and the section disappears with its last row. */}
+          an entry removes it and the section disappears with its last row.
+          It sits outside the configurable sections on purpose: these rows are
+          an explicit user action, not something to filter into a queue. */}
       {hasRequestedPRs && (
         <section className="review-prs__requested-section">
           <div className="section-header">
@@ -155,34 +243,56 @@ export function ReviewPRsSection({
         </section>
       )}
 
-      {/* My PRs Section */}
-      <section className="review-prs__my-section">
-        <div className="section-header">
-          <h2>My PRs ({myPRs.length})</h2>
-        </div>
-        {isLoading && <LoadingSpinner />}
-        {error && <ErrorMessage message={`Error loading PRs: ${error.message}`} />}
-        {!isLoading && !error && myPRs.length === 0 && (
-          <p className="review-prs__empty-state">
-            No PRs authored by you
-          </p>
-        )}
-        {!isLoading && !error && myPRs.length > 0 && (
-          <PRTable prs={myPRs} showViaTeams={false} />
-        )}
-      </section>
+      {sections.map((section, index) => (
+        <PRSection
+          key={section.id}
+          section={section}
+          prs={sectionPRs[index]}
+          index={index}
+          sectionCount={sections.length}
+          customizing={customizing}
+          editing={editingId === section.id}
+          availableTeams={availableTeams}
+          availableRepos={availableRepos}
+          availableAuthors={availableAuthors}
+          dragging={dragIndex === index}
+          onToggleCollapsed={() => setSectionCollapsed(section.id, !section.collapsed)}
+          onToggleEditing={() => setEditingId(editingId === section.id ? null : section.id)}
+          onTitleChange={(title) => renameSection(section.id, title)}
+          onFiltersChange={(filters) => setSectionFilters(section.id, filters)}
+          onDuplicate={() => {
+            track('duplicate_section');
+            duplicateSection(section.id);
+          }}
+          onRemove={() => {
+            track('remove_section');
+            if (editingId === section.id) setEditingId(null);
+            removeSection(section.id);
+          }}
+          onMove={(from, to) => {
+            track('move_section', { label: `${from}->${to}` });
+            moveSection(from, to);
+          }}
+          onDragStart={setDragIndex}
+          onDragEnd={() => setDragIndex(null)}
+          onDropOn={handleDrop}
+        />
+      ))}
 
-      {/* PRs to Review Section */}
-      <section>
-        <div className="section-header">
-          <h2>PRs to Review ({reviewPRs.length})</h2>
-        </div>
-        {isLoading && <LoadingSpinner />}
-        {error && <ErrorMessage message={`Error loading PRs: ${error.message}`} />}
-        {!isLoading && !error && (
-          <PRTable prs={reviewPRs} />
-        )}
-      </section>
+      {/* Anything the configured sections miss still gets a home, so narrowing
+          a section's filters never makes a PR vanish from the page. */}
+      {showUncategorized && uncategorizedPRs.length > 0 && (
+        <section className="pr-section">
+          <div className="section-header">
+            <h2 className="pr-section__heading">
+              <span className="pr-section__title" data-testid="section-title">
+                Other PRs ({uncategorizedPRs.length})
+              </span>
+            </h2>
+          </div>
+          <PRTable prs={uncategorizedPRs} />
+        </section>
+      )}
 
       {/* Hidden Section — collapsed by default, only shown once the user has
           hidden something. Search/team/repo filters apply with the same
@@ -195,7 +305,7 @@ export function ReviewPRsSection({
                 type="button"
                 className="hidden-section__toggle"
                 aria-expanded={hiddenExpanded}
-                onClick={() => setHiddenExpanded(v => !v)}
+                onClick={() => setHiddenExpanded((v) => !v)}
               >
                 <span className="hidden-section__chevron" aria-hidden="true">
                   {hiddenExpanded ? '▾' : '▸'}
