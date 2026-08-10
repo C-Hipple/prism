@@ -1,7 +1,13 @@
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReviewPRsSection } from './ReviewPRsSection';
 import type { PR } from '@/types/pr';
+import type { SectionsConfig } from '@/types/sections';
+import {
+  SECTIONS_STORAGE_KEY,
+  createSection,
+  defaultSectionsConfig,
+} from '@/utils/sectionConfig';
 
 const usePRsMock = vi.fn();
 const useCurrentUserMock = vi.fn();
@@ -75,6 +81,7 @@ describe('ReviewPRsSection', () => {
   });
 
   beforeEach(() => {
+    window.localStorage.clear();
     usePRsMock.mockReturnValue({
       data: [],
       isLoading: false,
@@ -275,5 +282,209 @@ describe('ReviewPRsSection', () => {
     fireEvent.click(toggle);
     const tables = getAllByTestId('pr-table-rows');
     expect(tables[1].textContent).toBe('Hidden billing PR');
+  });
+
+  describe('configurable sections', () => {
+    const sectionTitles = () =>
+      screen.getAllByTestId('section-title').map((el) => el.textContent);
+
+    const readStoredConfig = (): SectionsConfig =>
+      JSON.parse(window.localStorage.getItem(SECTIONS_STORAGE_KEY) ?? 'null');
+
+    const storeSections = (config: Partial<SectionsConfig> & Pick<SectionsConfig, 'sections'>) => {
+      window.localStorage.setItem(
+        SECTIONS_STORAGE_KEY,
+        JSON.stringify({ ...defaultSectionsConfig(), ...config })
+      );
+    };
+
+    const teamPRs = () => [
+      makePR({ number: 61, title: 'Platform PR', via_teams: ['Platform:pending'] }),
+      makePR({ number: 62, title: 'Growth PR', via_teams: ['Growth:pending'] }),
+      makePR({ number: 63, title: 'Bob PR', author: 'bob' }),
+    ];
+
+    beforeEach(() => {
+      useTelemetryMock.mockReturnValue({ track: vi.fn() });
+    });
+
+    it('renders the stored sections, in order, with their own filters applied', () => {
+      usePRsMock.mockReturnValue({ data: teamPRs(), isLoading: false, error: null });
+      storeSections({
+        showUncategorized: false,
+        sections: [
+          createSection('Growth queue', { teams: ['Growth'] }),
+          createSection('Platform queue', { teams: ['Platform'] }),
+        ],
+      });
+
+      const { getAllByTestId } = render(<ReviewPRsSection />);
+
+      expect(sectionTitles()).toEqual(['Growth queue (1)', 'Platform queue (1)']);
+
+      const tables = getAllByTestId('pr-table-rows');
+      expect(tables[0].textContent).toBe('Growth PR');
+      expect(tables[1].textContent).toBe('Platform PR');
+    });
+
+    it('intersects section filters with the global filter bar', () => {
+      usePRsMock.mockReturnValue({
+        data: [
+          makePR({ number: 71, title: 'Billing fix', via_teams: ['Platform:pending'] }),
+          makePR({ number: 72, title: 'Chat fix', via_teams: ['Platform:pending'] }),
+        ],
+        isLoading: false,
+        error: null,
+      });
+      storeSections({ sections: [createSection('Platform queue', { teams: ['Platform'] })] });
+
+      const { getByTestId } = render(<ReviewPRsSection searchTerm="billing" />);
+
+      expect(getByTestId('section-title').textContent).toBe('Platform queue (1)');
+      expect(getByTestId('pr-table-rows').textContent).toBe('Billing fix');
+    });
+
+    it('collects PRs no section matches under Other PRs, and lets that be turned off', () => {
+      usePRsMock.mockReturnValue({ data: teamPRs(), isLoading: false, error: null });
+      storeSections({ sections: [createSection('Platform queue', { teams: ['Platform'] })] });
+
+      const { getByLabelText, getByRole, queryByText } = render(<ReviewPRsSection />);
+
+      expect(sectionTitles()).toEqual([
+        'Platform queue (1)',
+        'Other PRs (2)',
+      ]);
+
+      fireEvent.click(getByRole('button', { name: 'Customize sections' }));
+      fireEvent.click(getByLabelText('Show unmatched PRs'));
+
+      expect(queryByText(/^Other PRs/)).toBeNull();
+      expect(readStoredConfig().showUncategorized).toBe(false);
+    });
+
+    it('reorders sections and saves the new order immediately', () => {
+      usePRsMock.mockReturnValue({ data: teamPRs(), isLoading: false, error: null });
+      storeSections({
+        showUncategorized: false,
+        sections: [createSection('First'), createSection('Second')],
+      });
+
+      const { getByRole } = render(<ReviewPRsSection />);
+      fireEvent.click(getByRole('button', { name: 'Customize sections' }));
+
+      // The first section can't move up, and the last can't move down.
+      expect(getByRole('button', { name: 'Move First up' }).hasAttribute('disabled')).toBe(true);
+      expect(getByRole('button', { name: 'Move Second down' }).hasAttribute('disabled')).toBe(true);
+
+      fireEvent.click(getByRole('button', { name: 'Move First down' }));
+
+      expect(sectionTitles()).toEqual([
+        'Second (3)',
+        'First (3)',
+      ]);
+      expect(readStoredConfig().sections.map((s) => s.title)).toEqual(['Second', 'First']);
+    });
+
+    it('reorders sections by dragging one onto another', () => {
+      usePRsMock.mockReturnValue({ data: teamPRs(), isLoading: false, error: null });
+      storeSections({
+        showUncategorized: false,
+        sections: [
+          { ...createSection('First'), id: 'first' },
+          { ...createSection('Second'), id: 'second' },
+        ],
+      });
+
+      const { getByRole, getByTestId } = render(<ReviewPRsSection />);
+      fireEvent.click(getByRole('button', { name: 'Customize sections' }));
+
+      const dataTransfer = { setData: vi.fn(), effectAllowed: '', dropEffect: '' };
+      fireEvent.dragStart(getByTestId('pr-section-first'), { dataTransfer });
+      fireEvent.dragOver(getByTestId('pr-section-second'), { dataTransfer });
+      fireEvent.drop(getByTestId('pr-section-second'), { dataTransfer });
+
+      expect(sectionTitles()).toEqual(['Second (3)', 'First (3)']);
+      expect(readStoredConfig().sections.map((s) => s.id)).toEqual(['second', 'first']);
+    });
+
+    it('adds a section, edits its filters, and saves after each change', () => {
+      usePRsMock.mockReturnValue({ data: teamPRs(), isLoading: false, error: null });
+      storeSections({ showUncategorized: false, sections: [createSection('Everything')] });
+
+      const { getByLabelText, getByRole, getByText } = render(<ReviewPRsSection />);
+      fireEvent.click(getByRole('button', { name: 'Customize sections' }));
+      fireEvent.click(getByRole('button', { name: '+ Add section' }));
+
+      expect(readStoredConfig().sections.map((s) => s.title)).toEqual([
+        'Everything',
+        'New section',
+      ]);
+
+      // Adding opens the editor on the new section; each control writes through.
+      fireEvent.change(getByLabelText('Name'), { target: { value: 'Bob watch' } });
+      expect(readStoredConfig().sections[1].title).toBe('Bob watch');
+
+      fireEvent.click(getByRole('button', { name: 'bob' }));
+      expect(readStoredConfig().sections[1].filters.authors).toEqual(['bob']);
+      expect(getByText('Bob watch (1)')).toBeTruthy();
+
+      // Toggling the same chip again removes it.
+      fireEvent.click(getByRole('button', { name: 'bob' }));
+      expect(readStoredConfig().sections[1].filters.authors).toEqual([]);
+    });
+
+    it('deletes a section and persists the removal', () => {
+      usePRsMock.mockReturnValue({ data: teamPRs(), isLoading: false, error: null });
+      storeSections({
+        showUncategorized: false,
+        sections: [createSection('Keep'), createSection('Drop')],
+      });
+
+      const { getByRole } = render(<ReviewPRsSection />);
+      fireEvent.click(getByRole('button', { name: 'Customize sections' }));
+      fireEvent.click(getByRole('button', { name: 'Delete Drop' }));
+
+      expect(sectionTitles()).toEqual(['Keep (3)']);
+      expect(readStoredConfig().sections.map((s) => s.title)).toEqual(['Keep']);
+    });
+
+    it('persists collapse state per section', () => {
+      usePRsMock.mockReturnValue({ data: teamPRs(), isLoading: false, error: null });
+      storeSections({ showUncategorized: false, sections: [createSection('Everything')] });
+
+      const { getByRole, queryAllByTestId } = render(<ReviewPRsSection />);
+      const toggle = getByRole('button', { name: 'Collapse Everything' });
+
+      expect(queryAllByTestId('pr-table-rows')).toHaveLength(1);
+      fireEvent.click(toggle);
+      expect(queryAllByTestId('pr-table-rows')).toHaveLength(0);
+      expect(readStoredConfig().sections[0].collapsed).toBe(true);
+    });
+
+    it('restores the default layout on reset', () => {
+      usePRsMock.mockReturnValue({ data: teamPRs(), isLoading: false, error: null });
+      storeSections({ sections: [createSection('Only mine', { authorship: 'mine' })] });
+
+      const { getByRole } = render(<ReviewPRsSection />);
+      fireEvent.click(getByRole('button', { name: 'Customize sections' }));
+      fireEvent.click(getByRole('button', { name: 'Reset to defaults' }));
+
+      expect(sectionTitles()).toEqual([
+        'My PRs (0)',
+        'PRs to Review (3)',
+      ]);
+      expect(readStoredConfig().sections.map((s) => s.title)).toEqual(['My PRs', 'PRs to Review']);
+    });
+
+    it('falls back to the default sections when nothing is stored', () => {
+      usePRsMock.mockReturnValue({ data: teamPRs(), isLoading: false, error: null });
+
+      render(<ReviewPRsSection />);
+
+      expect(sectionTitles()).toEqual([
+        'My PRs (0)',
+        'PRs to Review (3)',
+      ]);
+    });
   });
 });

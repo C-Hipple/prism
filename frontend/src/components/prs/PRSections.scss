@@ -1,0 +1,191 @@
+@use '../../styles/abstracts/variables' as *;
+
+.section-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $spacing-sm;
+  margin-bottom: $spacing-xl;
+
+  &__checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: $spacing-xs;
+    color: $color-text-secondary;
+    font-size: $font-size-sm;
+    cursor: pointer;
+  }
+}
+
+.pr-section {
+  margin-bottom: $spacing-3xl;
+
+  &--dragging {
+    opacity: 0.5;
+  }
+
+  &__heading {
+    display: flex;
+    align-items: center;
+    gap: $spacing-sm;
+  }
+
+  &__toggle {
+    display: flex;
+    align-items: center;
+    padding: 0;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-weight: inherit;
+    cursor: pointer;
+
+    &:hover .pr-section__chevron {
+      color: $color-text-primary;
+    }
+  }
+
+  &__chevron {
+    font-size: 0.8em;
+    color: $color-text-secondary;
+  }
+
+  &__grip {
+    color: $color-text-muted;
+    cursor: grab;
+    padding: 0 $spacing-xs;
+  }
+
+  &__summary {
+    margin: -8px 0 $spacing-lg;
+    color: $color-text-tertiary;
+    font-size: $font-size-sm;
+  }
+}
+
+.section-editor {
+  margin-bottom: $spacing-xl;
+  padding: $spacing-lg;
+  background: $color-bg-secondary;
+  border: 1px solid $color-border;
+  border-radius: $radius-md;
+
+  &__row {
+    display: flex;
+    align-items: flex-start;
+    gap: $spacing-md;
+    margin-bottom: $spacing-md;
+  }
+
+  &__label {
+    flex-shrink: 0;
+    width: 70px;
+    padding-top: $spacing-xs;
+    font-size: $font-size-sm;
+    color: $color-text-tertiary;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+
+  &__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: $spacing-sm;
+  }
+
+  &__hint {
+    padding-top: $spacing-xs;
+    color: $color-text-muted;
+    font-size: $font-size-sm;
+    font-style: italic;
+  }
+
+  &__text-input {
+    flex: 1;
+    max-width: 420px;
+    padding: $spacing-xs $spacing-md;
+    background: $color-bg-primary;
+    border: 1px solid $color-border;
+    border-radius: $radius-md;
+    color: $color-text-primary;
+    font-size: $font-size-base;
+    font-family: $font-system;
+
+    &:focus {
+      outline: none;
+      border-color: $color-link;
+    }
+  }
+
+  &__footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: $spacing-lg;
+    margin-top: $spacing-lg;
+  }
+
+  &__clear {
+    background: none;
+    border: none;
+    color: $color-text-tertiary;
+    font-size: $font-size-sm;
+    font-family: $font-system;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+
+    &:hover {
+      color: $color-text-secondary;
+    }
+  }
+
+  &__done {
+    padding: $spacing-xs $spacing-lg;
+    background: $color-bg-tertiary;
+    border: 1px solid $color-border;
+    border-radius: $radius-md;
+    color: $color-text-primary;
+    font-size: $font-size-sm;
+    font-family: $font-system;
+    cursor: pointer;
+
+    &:hover {
+      border-color: $color-text-tertiary;
+      background: $color-bg-hover;
+    }
+  }
+}
+
+.section-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-xs;
+  padding: $spacing-xs $spacing-md;
+  border-radius: $radius-lg;
+  border: 1px solid $color-border;
+  background: transparent;
+  color: $color-text-secondary;
+  font-size: $font-size-sm;
+  font-family: $font-system;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover {
+    border-color: $color-text-tertiary;
+    color: $color-text-primary;
+  }
+
+  &--active {
+    border-color: $color-link;
+    background: rgba(56, 139, 253, 0.1);
+    color: $color-link;
+
+    &:hover {
+      background: rgba(56, 139, 253, 0.15);
+    }
+  }
+}
