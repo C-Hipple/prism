@@ -2528,8 +2528,13 @@ func (p *Poller) generateReviewsBatch(ctx context.Context, prs []github.PullRequ
 		reviewSvc = service.NewService(p.ghClientConcrete, smartLlmClient, fastLlmClient)
 	}
 
-	// Concurrency limit: 5 parallel reviews
+	// Batch tokens are held across the agent stage, so a batch limit below
+	// AgentMaxConcurrent would silently cap agent concurrency under the
+	// configured value.
 	concurrencyLimit := 5
+	if p.cfg.AgentMaxConcurrent > concurrencyLimit {
+		concurrencyLimit = p.cfg.AgentMaxConcurrent
+	}
 	sem := make(chan struct{}, concurrencyLimit)
 	var wg sync.WaitGroup
 
