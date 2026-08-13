@@ -198,7 +198,7 @@ func RunAgentReview(
 		log.Printf("%s required checks issued: %v", logPrefix, ids)
 	}
 
-	prompt, err := buildAgentPromptContent(geminiComments, gates, memEntries, checks)
+	prompt, err := buildAgentPromptContent(defaultBranch, diffFiles, geminiComments, gates, memEntries, checks)
 	if err != nil {
 		return nil, fmt.Errorf("agent: build prompt: %w", err)
 	}
@@ -453,18 +453,50 @@ func matchBracket(s string, start int) int {
 	return -1
 }
 
+// prScopeSection names the PR's base branch and lists the changed files so
+// the agent's own review pass diffs against the right base. Without it the
+// agent has to guess (origin/HEAD, "master"), which on a stacked PR pulls
+// parent-branch changes into scope. Empty inputs contribute nothing.
+func prScopeSection(baseBranch string, files []diffFile) string {
+	if baseBranch == "" && len(files) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n--- PR SCOPE ---\n")
+	if baseBranch != "" {
+		fmt.Fprintf(&b, "The PR's base branch is `origin/%s`. The change under review is exactly `git diff origin/%s...HEAD`. Do not diff against origin/HEAD or any other branch — on a stacked PR that drags in parent-branch changes that are out of scope, and code the PR does not touch must not be flagged.\n", baseBranch, baseBranch)
+	}
+	if len(files) > 0 {
+		b.WriteString("Changed files (+added/-removed lines):\n")
+		// Cap the listing so a sprawling refactor can't crowd out the rest of
+		// the prompt; the agent can still enumerate the tail via git.
+		const maxListed = 100
+		for i, f := range files {
+			if i == maxListed {
+				fmt.Fprintf(&b, "- ...and %d more (see the diff for the full list)\n", len(files)-maxListed)
+				break
+			}
+			fmt.Fprintf(&b, "- %s (%s, +%d/-%d)\n", f.Path, f.Status, len(f.Added), len(f.Removed))
+		}
+	}
+	return b.String()
+}
+
 // buildAgentPromptContent assembles the agent prompt: the static template,
-// the mechanical-gate alerts (if any), the bug-history section (if any
+// the PR-scope section (base branch + changed files, if known), the
+// mechanical-gate alerts (if any), the bug-history section (if any
 // memory entries matched), the required-checks block (if the feature issued
-// any), then a JSON block of Gemini comments. With no gates, no matches and
-// no checks the prompt is byte-identical to a memoryless, checkless build.
-func buildAgentPromptContent(geminiComments, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
+// any), then a JSON block of Gemini comments. With no scope, no gates, no
+// matches and no checks the prompt is byte-identical to a memoryless,
+// checkless build.
+func buildAgentPromptContent(baseBranch string, diffFiles []diffFile, geminiComments, gates []types.LineComment, bugHistory []BugMemoryEntry, checks []RequiredCheck) (string, error) {
 	commentsJSON, err := json.MarshalIndent(geminiComments, "", "  ")
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
 	b.WriteString(promptAgentReview)
+	b.WriteString(prScopeSection(baseBranch, diffFiles))
 	if len(gates) > 0 {
 		b.WriteString("\n--- MECHANICAL ALERTS (deterministic checks; explicitly address each in your review) ---\n")
 		for _, g := range gates {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -705,3 +706,51 @@ func TestParseAgentJSON(t *testing.T) {
 
 // Keep errors import alive.
 var _ = errors.New
+
+func TestPRScopeSection_EmptyInputsContributeNothing(t *testing.T) {
+	if got := prScopeSection("", nil); got != "" {
+		t.Errorf("empty inputs must produce no section, got %q", got)
+	}
+	prompt, err := buildAgentPromptContent("", nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "PR SCOPE") {
+		t.Error("prompt without base/diff must not mention PR SCOPE")
+	}
+}
+
+func TestPRScopeSection_NamesBaseAndListsFiles(t *testing.T) {
+	files := []diffFile{
+		{Path: "a/b.go", Status: "modified", Added: []string{"x", "y"}, Removed: []string{"z"}},
+		{Path: "c.py", Status: "added", Added: []string{"q"}},
+	}
+	got := prScopeSection("feature/parent", files)
+	for _, want := range []string{
+		"--- PR SCOPE ---",
+		"`git diff origin/feature/parent...HEAD`",
+		"- a/b.go (modified, +2/-1)",
+		"- c.py (added, +1/-0)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("scope section missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestPRScopeSection_FileListCapped(t *testing.T) {
+	files := make([]diffFile, 130)
+	for i := range files {
+		files[i] = diffFile{Path: fmt.Sprintf("f%03d.go", i), Status: "modified"}
+	}
+	got := prScopeSection("master", files)
+	if !strings.Contains(got, "- f099.go") {
+		t.Error("file 100 should be listed")
+	}
+	if strings.Contains(got, "- f100.go") {
+		t.Error("file 101 should be cut by the cap")
+	}
+	if !strings.Contains(got, "...and 30 more") {
+		t.Errorf("missing truncation marker:\n%s", got)
+	}
+}
